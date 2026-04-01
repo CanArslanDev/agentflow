@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 // Logging returns a pair of hooks that log tool execution start and completion

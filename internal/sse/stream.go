@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 // Stream parses an OpenAI-compatible SSE response into agentflow StreamEvents.

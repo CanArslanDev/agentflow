@@ -22,7 +22,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 // ExecuteFunc is the function signature for tool execution.

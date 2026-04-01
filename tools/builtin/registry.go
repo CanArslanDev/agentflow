@@ -3,7 +3,7 @@ package builtin
 import (
 	"context"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 // All returns all built-in tools regardless of locality. Use with ModeLocal

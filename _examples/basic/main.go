@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/canarslan/agentflow"
-	"github.com/canarslan/agentflow/provider/openrouter"
-	"github.com/canarslan/agentflow/tools"
+	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/provider/openrouter"
+	"github.com/CanArslanDev/agentflow/tools"
 )
 
 func main() {
@@ -20,7 +20,7 @@ func main() {
 	}
 
 	provider := openrouter.New(apiKey, "anthropic/claude-sonnet-4-20250514",
-		openrouter.WithReferer("https://github.com/canarslan/agentflow"),
+		openrouter.WithReferer("https://github.com/CanArslanDev/agentflow"),
 		openrouter.WithTitle("agentflow-example"),
 	)
 

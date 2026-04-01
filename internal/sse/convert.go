@@ -3,7 +3,7 @@ package sse
 import (
 	"fmt"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 // ConvertMessages transforms agentflow messages into the OpenAI-compatible format.

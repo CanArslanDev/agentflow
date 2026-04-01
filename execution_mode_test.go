@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/canarslan/agentflow"
-	"github.com/canarslan/agentflow/provider/groq"
-	"github.com/canarslan/agentflow/provider/mock"
-	"github.com/canarslan/agentflow/tools"
-	"github.com/canarslan/agentflow/tools/builtin"
+	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/provider/groq"
+	"github.com/CanArslanDev/agentflow/provider/mock"
+	"github.com/CanArslanDev/agentflow/tools"
+	"github.com/CanArslanDev/agentflow/tools/builtin"
 )
 
 // --- Unit tests ---

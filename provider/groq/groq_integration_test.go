@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/canarslan/agentflow"
-	"github.com/canarslan/agentflow/provider/groq"
-	"github.com/canarslan/agentflow/tools"
+	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/provider/groq"
+	"github.com/CanArslanDev/agentflow/tools"
 )
 
 func getAPIKey(t *testing.T) string {

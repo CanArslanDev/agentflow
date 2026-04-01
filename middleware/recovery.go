@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"runtime/debug"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 // Recovery returns a PreToolUse hook that wraps tool execution with panic recovery.

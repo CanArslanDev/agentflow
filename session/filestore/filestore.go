@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 const fileExtension = ".session.json"

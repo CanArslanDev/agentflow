@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 // HTTPRequest returns a tool that makes HTTP requests.

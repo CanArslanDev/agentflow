@@ -19,7 +19,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 // Provider is a deterministic mock that replays pre-programmed responses.

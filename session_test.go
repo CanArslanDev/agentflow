@@ -5,10 +5,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/canarslan/agentflow"
-	"github.com/canarslan/agentflow/provider/mock"
-	"github.com/canarslan/agentflow/session/filestore"
-	"github.com/canarslan/agentflow/session/memstore"
+	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/provider/mock"
+	"github.com/CanArslanDev/agentflow/session/filestore"
+	"github.com/CanArslanDev/agentflow/session/memstore"
 )
 
 // TestMemstoreRoundTrip verifies save → load → list → delete cycle.

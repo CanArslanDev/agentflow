@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/canarslan/agentflow"
-	"github.com/canarslan/agentflow/provider/mock"
-	"github.com/canarslan/agentflow/tools"
+	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/provider/mock"
+	"github.com/CanArslanDev/agentflow/tools"
 )
 
 // TestBudgetExhausted verifies the loop stops when token budget is consumed.

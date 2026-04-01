@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 // Store is a thread-safe in-memory session store.

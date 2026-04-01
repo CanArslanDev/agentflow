@@ -15,7 +15,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 // Provider tries each underlying provider in order until one succeeds.

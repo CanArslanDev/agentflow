@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 // WebSearch returns a tool that searches the web using DuckDuckGo's HTML API.

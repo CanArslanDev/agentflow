@@ -49,7 +49,7 @@ An agentic AI system is one where a language model autonomously decides to invok
 ## Installation
 
 ```bash
-go get github.com/canarslan/agentflow
+go get github.com/CanArslanDev/agentflow
 ```
 
 Requires Go 1.23 or later.
@@ -64,9 +64,9 @@ import (
     "encoding/json"
     "fmt"
 
-    "github.com/canarslan/agentflow"
-    "github.com/canarslan/agentflow/provider/groq"
-    "github.com/canarslan/agentflow/tools"
+    "github.com/CanArslanDev/agentflow"
+    "github.com/CanArslanDev/agentflow/provider/groq"
+    "github.com/CanArslanDev/agentflow/tools"
 )
 
 func main() {
@@ -329,7 +329,7 @@ agent := agentflow.NewAgent(provider,
 Save and resume conversations across restarts:
 
 ```go
-import "github.com/canarslan/agentflow/session/filestore"
+import "github.com/CanArslanDev/agentflow/session/filestore"
 
 store, _ := filestore.New("./sessions")
 agent := agentflow.NewAgent(provider,
@@ -422,7 +422,7 @@ The first message (initial user prompt) is always preserved. A system notice is 
 Automatic failover when a provider is unavailable:
 
 ```go
-import "github.com/canarslan/agentflow/provider/fallback"
+import "github.com/CanArslanDev/agentflow/provider/fallback"
 
 provider := fallback.New(
     groq.New(groqKey, "llama-3.3-70b-versatile"),
@@ -487,7 +487,7 @@ builtin.ReadOnly() // only read-only tools
 ## Middleware
 
 ```go
-import "github.com/canarslan/agentflow/middleware"
+import "github.com/CanArslanDev/agentflow/middleware"
 
 // Structured logging with slog
 for _, h := range middleware.Logging(slog.Default()) {

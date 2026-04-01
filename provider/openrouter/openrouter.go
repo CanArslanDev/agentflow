@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/canarslan/agentflow"
-	"github.com/canarslan/agentflow/internal/sse"
+	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/internal/sse"
 )
 
 const (

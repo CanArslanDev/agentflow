@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/canarslan/agentflow"
-	"github.com/canarslan/agentflow/provider/openrouter"
-	"github.com/canarslan/agentflow/tools"
+	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/provider/openrouter"
+	"github.com/CanArslanDev/agentflow/tools"
 )
 
 func main() {

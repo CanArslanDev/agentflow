@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/canarslan/agentflow"
-	"github.com/canarslan/agentflow/provider/groq"
-	"github.com/canarslan/agentflow/tools/builtin"
+	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/provider/groq"
+	"github.com/CanArslanDev/agentflow/tools/builtin"
 )
 
 func call(t *testing.T, tool agentflow.Tool, input string) *agentflow.ToolResult {

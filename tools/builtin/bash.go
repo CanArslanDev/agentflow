@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/canarslan/agentflow"
+	"github.com/CanArslanDev/agentflow"
 )
 
 const defaultBashTimeout = 120 * time.Second

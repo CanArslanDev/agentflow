@@ -8,10 +8,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/canarslan/agentflow"
-	"github.com/canarslan/agentflow/middleware"
-	"github.com/canarslan/agentflow/provider/openrouter"
-	"github.com/canarslan/agentflow/tools"
+	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/middleware"
+	"github.com/CanArslanDev/agentflow/provider/openrouter"
+	"github.com/CanArslanDev/agentflow/tools"
 )
 
 func main() {

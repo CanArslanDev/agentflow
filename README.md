@@ -166,12 +166,40 @@ type Provider interface {
 
 Built-in providers:
 
-| Provider | Package | Description |
-|----------|---------|-------------|
-| Groq | `provider/groq` | Ultra-fast inference, tool use support |
-| OpenRouter | `provider/openrouter` | Unified access to hundreds of models |
-| Fallback | `provider/fallback` | Cascading failover across providers |
-| Mock | `provider/mock` | Deterministic testing without API calls |
+| Provider | Package | Models | Auth |
+|----------|---------|--------|------|
+| OpenAI | `provider/openai` | gpt-4o, gpt-4o-mini, gpt-4-turbo | `Authorization: Bearer sk-...` |
+| Anthropic | `provider/anthropic` | claude-sonnet-4, claude-haiku-4.5, claude-opus-4 | `x-api-key: sk-ant-...` |
+| Google Gemini | `provider/gemini` | gemini-2.0-flash, gemini-2.5-pro | API key in URL param |
+| Groq | `provider/groq` | llama-3.3-70b, mixtral-8x7b | `Authorization: Bearer gsk_...` |
+| OpenRouter | `provider/openrouter` | All models via unified API | `Authorization: Bearer sk-or-...` |
+| Fallback | `provider/fallback` | Cascading failover across any providers | N/A |
+| Mock | `provider/mock` | Deterministic testing without API calls | N/A |
+
+Provider examples:
+
+```go
+// OpenAI
+provider := openai.New("sk-...", "gpt-4o")
+
+// Anthropic Claude
+provider := anthropic.New("sk-ant-...", "claude-sonnet-4-20250514")
+
+// Google Gemini
+provider := gemini.New("AIza...", "gemini-2.0-flash")
+
+// Groq
+provider := groq.New("gsk_...", "llama-3.3-70b-versatile")
+
+// OpenRouter (any model)
+provider := openrouter.New("sk-or-...", "anthropic/claude-sonnet-4-20250514")
+
+// Fallback: try OpenAI first, then Groq
+provider := fallback.New(
+    openai.New("sk-...", "gpt-4o"),
+    groq.New("gsk_...", "llama-3.3-70b-versatile"),
+)
+```
 
 ### Tool
 
@@ -570,9 +598,12 @@ agentflow/
     errors.go                -- Sentinel errors, ProviderError, ToolError
 
     provider/
-        groq/                -- Groq API provider
-        openrouter/          -- OpenRouter API provider
-        fallback/            -- Multi-provider fallback
+        openai/              -- OpenAI Chat Completions API
+        anthropic/           -- Anthropic Messages API (different format than OpenAI)
+        gemini/              -- Google Gemini generateContent API
+        groq/                -- Groq API (OpenAI-compatible)
+        openrouter/          -- OpenRouter API (OpenAI-compatible, all models)
+        fallback/            -- Multi-provider cascading failover
         mock/                -- Deterministic mock for testing
 
     internal/

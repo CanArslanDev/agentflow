@@ -115,17 +115,29 @@ func (t *myTool) Execute(ctx context.Context, input json.RawMessage, progress ag
 }
 ```
 
-### Provider Implementation Pattern
+### Provider Implementation Patterns
 
-All providers that use OpenAI-compatible APIs should use the shared `internal/sse` package:
+**OpenAI-compatible providers** (OpenAI, Groq, OpenRouter) use the shared `internal/sse` package:
 
 ```go
 func (p *Provider) CreateStream(ctx context.Context, req *agentflow.Request) (agentflow.Stream, error) {
-    body := sse.BuildRequestBody(p.model, req)  // shared conversion
-    // ... HTTP request ...
+    body := sse.BuildRequestBody(p.model, req)  // shared request conversion
+    // ... HTTP request with Authorization: Bearer header ...
     return sse.NewStream(resp), nil              // shared SSE parser
 }
 ```
+
+**Anthropic** has its own format (tool_use content blocks, x-api-key header, different SSE events):
+- Custom stream parser in `provider/anthropic/stream.go`
+- Custom message conversion in `provider/anthropic/anthropic.go`
+- Auth via `x-api-key` header (not `Authorization: Bearer`)
+- Requires `anthropic-version` header
+
+**Gemini** has its own format (functionCall parts, API key in URL):
+- Custom stream parser in `provider/gemini/gemini.go`
+- Custom message conversion with `contents` array and `parts`
+- Auth via `?key=` URL parameter (not header)
+- Uses `generativelanguage.googleapis.com` base URL
 
 ### Test Naming
 
@@ -178,8 +190,11 @@ agentflow/
     doc.go                   # Package-level documentation
 
     -- Providers --
-    provider/groq/           # Groq API (uses internal/sse)
-    provider/openrouter/     # OpenRouter API (uses internal/sse)
+    provider/openai/         # OpenAI Chat Completions (uses internal/sse)
+    provider/anthropic/      # Anthropic Messages API (custom SSE parser — different format)
+    provider/gemini/         # Google Gemini generateContent (custom SSE parser)
+    provider/groq/           # Groq API (uses internal/sse, OpenAI-compatible)
+    provider/openrouter/     # OpenRouter API (uses internal/sse, OpenAI-compatible)
     provider/fallback/       # Cascading multi-provider failover
     provider/mock/           # Deterministic mock for testing
 

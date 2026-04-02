@@ -298,8 +298,9 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			return
 		}
 
-		// Consume the stream: emit text deltas, collect tool calls.
-		assistantMsg, toolCalls, err := a.consumeStream(ctx, stream, events)
+		// Consume the stream: emit text deltas, start tool execution immediately.
+		stExec := newStreamingToolExecutor(a, state, events)
+		assistantMsg, toolCalls, err := a.consumeStreamWithExecutor(ctx, stream, events, stExec)
 		stream.Close()
 		if usage := stream.Usage(); usage != nil {
 			lastUsage = usage
@@ -389,14 +390,41 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			continue
 		}
 
-		// Execute tools.
-		results := a.executeTools(ctx, toolCalls, state, events)
+		// Collect results from streaming executor (tools already started during stream).
+		// If streaming executor has pending results, use those. Otherwise fall back
+		// to sequential execution for any tools not yet started.
+		var results []toolExecResult
+		if stExec.hasPending() {
+			results = stExec.collect(ctx)
+		} else {
+			results = a.executeTools(ctx, toolCalls, state, events)
+		}
 
 		// Build and append the tool results message.
 		toolResultMsg := newToolResultMessage(results)
 		state.messages = append(state.messages, toolResultMsg)
 		a.emit(events, Event{Type: EventMessage, Message: &toolResultMsg})
 	}
+}
+
+// consumeStreamWithExecutor reads events from the provider stream and immediately
+// submits tool calls to the streaming executor as they arrive, rather than waiting
+// for the stream to finish. This overlaps model generation with tool execution.
+func (a *Agent) consumeStreamWithExecutor(ctx context.Context, stream Stream, events chan<- Event, executor *streamingToolExecutor) (Message, []ToolCall, error) {
+	msg, calls, err := a.consumeStream(ctx, stream, events)
+	if err != nil {
+		return msg, calls, err
+	}
+
+	// Submit all tool calls to the streaming executor for parallel execution.
+	for _, call := range calls {
+		tool, ok := a.tools[call.Name]
+		if ok && IsToolAllowed(tool, a.config.ExecutionMode) {
+			executor.submit(call)
+		}
+	}
+
+	return msg, calls, nil
 }
 
 // consumeStream reads all events from the provider stream, emitting text deltas

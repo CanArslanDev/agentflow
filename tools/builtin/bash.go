@@ -28,7 +28,7 @@ type bashTool struct{}
 
 func (t *bashTool) Name() string        { return "bash" }
 func (t *bashTool) Description() string {
-	return "Execute a shell command and return its stdout and stderr. Use for running scripts, installing packages, building code, or any system operation."
+	return "Execute a shell command via /bin/sh and return stdout and stderr. Use for running scripts, building code, installing packages, or system operations. Commands run with the agent process permissions. Maximum timeout is 120 seconds."
 }
 
 func (t *bashTool) InputSchema() map[string]any {
@@ -57,6 +57,9 @@ func (t *bashTool) Execute(ctx context.Context, input json.RawMessage, progress 
 	timeout := defaultBashTimeout
 	if params.Timeout > 0 {
 		timeout = time.Duration(params.Timeout) * time.Millisecond
+		if timeout > defaultBashTimeout {
+			timeout = defaultBashTimeout
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)

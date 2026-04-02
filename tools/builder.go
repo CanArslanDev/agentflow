@@ -21,6 +21,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/CanArslanDev/agentflow"
 )
@@ -88,10 +89,26 @@ func (b *Builder) WithExecute(fn ExecuteFunc) *Builder {
 }
 
 // Build returns the completed Tool. Panics if no execute function is set.
+// Use MustBuild for panic behavior or BuildSafe for error-returning variant.
 func (b *Builder) Build() agentflow.Tool {
 	if b.executeFn == nil {
 		panic("agentflow/tools: Build() called without WithExecute()")
 	}
+	return b.build()
+}
+
+// BuildSafe returns the completed Tool or an error if the builder is incomplete.
+func (b *Builder) BuildSafe() (agentflow.Tool, error) {
+	if b.executeFn == nil {
+		return nil, fmt.Errorf("agentflow/tools: execute function is required")
+	}
+	if b.name == "" {
+		return nil, fmt.Errorf("agentflow/tools: tool name is required")
+	}
+	return b.build(), nil
+}
+
+func (b *Builder) build() agentflow.Tool {
 	return &builtTool{
 		name:            b.name,
 		description:     b.description,

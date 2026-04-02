@@ -1,4 +1,4 @@
-// Basic example: a minimal agent that uses a single tool.
+// Basic example: a minimal agent with a working calculator tool.
 package main
 
 import (
@@ -6,54 +6,72 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/CanArslanDev/agentflow"
-	"github.com/CanArslanDev/agentflow/provider/openrouter"
+	"github.com/CanArslanDev/agentflow/provider/groq"
 	"github.com/CanArslanDev/agentflow/tools"
 )
 
 func main() {
-	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	apiKey := os.Getenv("GROQ_API_KEY")
 	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "OPENROUTER_API_KEY environment variable required")
+		fmt.Fprintln(os.Stderr, "GROQ_API_KEY environment variable required")
 		os.Exit(1)
 	}
 
-	provider := openrouter.New(apiKey, "anthropic/claude-sonnet-4-20250514",
-		openrouter.WithReferer("https://github.com/CanArslanDev/agentflow"),
-		openrouter.WithTitle("agentflow-example"),
-	)
+	provider := groq.New(apiKey, "llama-3.3-70b-versatile")
 
-	calculator := tools.New("calculator", "Evaluate a mathematical expression and return the result.").
+	calculator := tools.New("calculator", "Evaluate a mathematical expression with two numbers. Supports add, subtract, multiply, divide.").
 		WithSchema(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"expression": map[string]any{
-					"type":        "string",
-					"description": "The mathematical expression to evaluate (e.g., '2 + 2', '15 * 3')",
-				},
+				"a":        map[string]any{"type": "number", "description": "First number"},
+				"b":        map[string]any{"type": "number", "description": "Second number"},
+				"operator": map[string]any{"type": "string", "description": "Operator: add, subtract, multiply, divide"},
 			},
-			"required": []string{"expression"},
+			"required": []string{"a", "b", "operator"},
 		}).
-		ReadOnly(true).
 		ConcurrencySafe(true).
+		ReadOnly(true).
+		RemoteSafe().
 		WithExecute(func(_ context.Context, input json.RawMessage, _ agentflow.ProgressFunc) (*agentflow.ToolResult, error) {
-			var params struct {
-				Expression string `json:"expression"`
+			var p struct {
+				A        float64 `json:"a"`
+				B        float64 `json:"b"`
+				Operator string  `json:"operator"`
 			}
-			if err := json.Unmarshal(input, &params); err != nil {
-				return &agentflow.ToolResult{Content: err.Error(), IsError: true}, nil
+			if err := json.Unmarshal(input, &p); err != nil {
+				return &agentflow.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
 			}
-			// Simple demo — in production you'd use a proper expression evaluator.
+
+			var result float64
+			switch strings.ToLower(p.Operator) {
+			case "add", "+":
+				result = p.A + p.B
+			case "subtract", "-":
+				result = p.A - p.B
+			case "multiply", "*":
+				result = p.A * p.B
+			case "divide", "/":
+				if p.B == 0 {
+					return &agentflow.ToolResult{Content: "division by zero", IsError: true}, nil
+				}
+				result = p.A / p.B
+			default:
+				return &agentflow.ToolResult{Content: "unknown operator: " + p.Operator, IsError: true}, nil
+			}
+
 			return &agentflow.ToolResult{
-				Content: fmt.Sprintf("Result of '%s' = 42 (demo)", params.Expression),
+				Content: strconv.FormatFloat(result, 'f', -1, 64),
 			}, nil
 		}).
 		Build()
 
 	agent := agentflow.NewAgent(provider,
 		agentflow.WithTools(calculator),
-		agentflow.WithSystemPrompt("You are a helpful assistant. Use the calculator tool when asked about math."),
+		agentflow.WithSystemPrompt("You are a helpful assistant. Use the calculator tool for math operations."),
 		agentflow.WithMaxTurns(5),
 	)
 
@@ -61,21 +79,18 @@ func main() {
 		agentflow.NewUserMessage("What is 15 multiplied by 28?"),
 	}
 
-	fmt.Println("Agent running...")
-	fmt.Println()
-
 	for ev := range agent.Run(context.Background(), messages) {
 		switch ev.Type {
 		case agentflow.EventTextDelta:
 			fmt.Print(ev.TextDelta.Text)
 		case agentflow.EventToolStart:
-			fmt.Printf("\n⚡ [%s] executing...\n", ev.ToolStart.ToolCall.Name)
+			fmt.Printf("\n[tool: %s]\n", ev.ToolStart.ToolCall.Name)
 		case agentflow.EventToolEnd:
-			fmt.Printf("✓ [%s] completed in %v\n\n", ev.ToolEnd.ToolCall.Name, ev.ToolEnd.Duration)
+			fmt.Printf("[result: %s]\n\n", ev.ToolEnd.Result.Content)
 		case agentflow.EventTurnEnd:
-			fmt.Printf("\n\n--- Agent finished (reason: %s, turns: %d) ---\n", ev.TurnEnd.Reason, ev.TurnEnd.TurnNumber)
+			fmt.Printf("\n--- turn %d: %s ---\n", ev.TurnEnd.TurnNumber, ev.TurnEnd.Reason)
 		case agentflow.EventError:
-			fmt.Fprintf(os.Stderr, "\nError: %v\n", ev.Error.Err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", ev.Error.Err)
 		}
 	}
 }

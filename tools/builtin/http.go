@@ -75,7 +75,21 @@ func (t *httpTool) Execute(ctx context.Context, input json.RawMessage, progress 
 		req.Header.Set(k, v)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "agentflow/1.0")
+	}
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects (max 10)")
+			}
+			return nil
+		},
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return &agentflow.ToolResult{Content: err.Error(), IsError: true}, nil
 	}

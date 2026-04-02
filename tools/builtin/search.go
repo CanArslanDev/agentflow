@@ -132,6 +132,10 @@ func (t *grepTool) InputSchema() map[string]any {
 				"type":        "string",
 				"description": "File pattern filter (e.g., '*.go', '*.ts')",
 			},
+			"max_results": map[string]any{
+				"type":        "integer",
+				"description": "Maximum number of matching lines to return (default: 100)",
+			},
 		},
 		"required": []string{"pattern"},
 	}
@@ -139,9 +143,10 @@ func (t *grepTool) InputSchema() map[string]any {
 
 func (t *grepTool) Execute(_ context.Context, input json.RawMessage, _ agentflow.ProgressFunc) (*agentflow.ToolResult, error) {
 	var params struct {
-		Pattern string `json:"pattern"`
-		Path    string `json:"path"`
-		Glob    string `json:"glob"`
+		Pattern    string `json:"pattern"`
+		Path       string `json:"path"`
+		Glob       string `json:"glob"`
+		MaxResults int    `json:"max_results"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
 		return &agentflow.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
@@ -153,7 +158,13 @@ func (t *grepTool) Execute(_ context.Context, input json.RawMessage, _ agentflow
 	}
 
 	var results []string
-	maxResults := 100
+	maxResults := params.MaxResults
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+	if maxResults > 1000 {
+		maxResults = 1000
+	}
 
 	filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || len(results) >= maxResults {

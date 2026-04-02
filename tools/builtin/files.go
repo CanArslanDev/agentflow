@@ -11,6 +11,31 @@ import (
 	"github.com/CanArslanDev/agentflow"
 )
 
+// validatePath checks for path traversal and blocked paths.
+func validatePath(path string) error {
+	cleaned := filepath.Clean(path)
+
+	// Block device files and proc filesystem.
+	blocked := []string{"/dev/", "/proc/", "/sys/"}
+	for _, prefix := range blocked {
+		if strings.HasPrefix(cleaned, prefix) {
+			return fmt.Errorf("access denied: %s", prefix)
+		}
+	}
+
+	// Resolve symlinks to detect traversal via symlink chains.
+	resolved, err := filepath.EvalSymlinks(filepath.Dir(cleaned))
+	if err == nil {
+		for _, prefix := range blocked {
+			if strings.HasPrefix(resolved, prefix) {
+				return fmt.Errorf("access denied: symlink resolves to %s", prefix)
+			}
+		}
+	}
+
+	return nil
+}
+
 // --- ReadFile ---
 
 // ReadFile returns a tool that reads file contents from the filesystem.
@@ -51,6 +76,10 @@ func (t *readFileTool) Execute(_ context.Context, input json.RawMessage, _ agent
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
 		return &agentflow.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
+	}
+
+	if err := validatePath(params.Path); err != nil {
+		return &agentflow.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
 
 	data, err := os.ReadFile(params.Path)
@@ -115,6 +144,10 @@ func (t *writeFileTool) Execute(_ context.Context, input json.RawMessage, _ agen
 		return &agentflow.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
 	}
 
+	if err := validatePath(params.Path); err != nil {
+		return &agentflow.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
+
 	dir := filepath.Dir(params.Path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return &agentflow.ToolResult{Content: err.Error(), IsError: true}, nil
@@ -164,6 +197,10 @@ func (t *editFileTool) Execute(_ context.Context, input json.RawMessage, _ agent
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
 		return &agentflow.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
+	}
+
+	if err := validatePath(params.Path); err != nil {
+		return &agentflow.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
 
 	data, err := os.ReadFile(params.Path)

@@ -98,31 +98,56 @@ type searchResult struct {
 	snippet string
 }
 
-// duckDuckGoSearch queries DuckDuckGo's HTML endpoint and parses results.
+// duckDuckGoSearch queries DuckDuckGo's HTML endpoint with retry on rate limit.
 func duckDuckGoSearch(ctx context.Context, query string, maxResults int) ([]searchResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
 	searchURL := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "agentflow/1.0 (web search tool)")
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+		reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		req, err := http.NewRequestWithContext(reqCtx, "GET", searchURL, nil)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; agentflow/1.0)")
+		req.Header.Set("Accept", "text/html")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if err != nil {
-		return nil, err
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			cancel()
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			resp.Body.Close()
+			cancel()
+			lastErr = fmt.Errorf("HTTP %d from search", resp.StatusCode)
+			continue
+		}
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+		resp.Body.Close()
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+
+		results := parseSearchResults(string(body), maxResults)
+		return results, nil
 	}
 
-	return parseSearchResults(string(body), maxResults), nil
+	return nil, fmt.Errorf("search failed after 3 attempts: %w", lastErr)
 }
 
 // parseSearchResults extracts results from DuckDuckGo HTML response.

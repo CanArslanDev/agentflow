@@ -687,12 +687,40 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 		a.emit(events, Event{Type: EventToolProgress, ToolProgress: &pe})
 	}
 
-	result, err := a.callToolWithRecovery(ctx, tool, currentCall.Input, progressFn)
-	duration := time.Since(start)
+	maxAttempts := 1 + a.config.ToolRetries
+	var result *ToolResult
 
-	if err != nil {
-		result = &ToolResult{Content: err.Error(), IsError: true}
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		toolCtx := ctx
+		var cancelTimeout context.CancelFunc
+		if a.config.ToolTimeout > 0 {
+			toolCtx, cancelTimeout = context.WithTimeout(ctx, a.config.ToolTimeout)
+		}
+
+		var toolErr error
+		result, toolErr = a.callToolWithRecovery(toolCtx, tool, currentCall.Input, progressFn)
+
+		if cancelTimeout != nil {
+			cancelTimeout()
+		}
+
+		if toolErr != nil {
+			result = &ToolResult{Content: toolErr.Error(), IsError: true}
+		}
+
+		// Only retry if result is an error and we have attempts left.
+		if result != nil && !result.IsError {
+			break
+		}
+		if attempt < maxAttempts-1 {
+			a.logWarn("retrying tool execution",
+				slog.String("tool", call.Name),
+				slog.Int("attempt", attempt+1),
+				slog.Int("max_attempts", maxAttempts),
+			)
+		}
 	}
+	duration := time.Since(start)
 
 	// Apply result size limiting.
 	result = a.limitResult(result)

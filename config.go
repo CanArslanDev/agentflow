@@ -66,6 +66,16 @@ type Config struct {
 	// waits for permission before each CreateStream call. nil means no rate limiting.
 	RateLimiter RateLimiter
 
+	// ToolRetries is the number of times to retry a failed tool execution before
+	// returning the error to the model. Zero means no retries (default). Only
+	// retries when the tool returns IsError: true.
+	ToolRetries int
+
+	// ToolTimeout sets a maximum duration for individual tool executions.
+	// If a tool does not complete within this duration, its context is cancelled
+	// and an error result is returned. Zero means no timeout (default).
+	ToolTimeout time.Duration
+
 	// Logger enables structured logging for agent lifecycle events: model calls,
 	// retries, compaction, budget warnings, and validation errors. nil disables
 	// logging (zero overhead). Use log/slog for structured output.
@@ -240,6 +250,31 @@ func WithMaxResultSize(chars int) Option {
 func WithSessionStore(store SessionStore) Option {
 	return func(a *Agent) {
 		a.sessionStore = store
+	}
+}
+
+// WithToolRetries sets the number of retry attempts for failed tool executions.
+// Only retries when a tool returns IsError: true. Zero (default) means no retries.
+//
+//	agent := agentflow.NewAgent(provider,
+//	    agentflow.WithToolRetries(2), // retry up to 2 times on error
+//	)
+func WithToolRetries(n int) Option {
+	return func(a *Agent) {
+		a.config.ToolRetries = n
+	}
+}
+
+// WithToolTimeout sets a maximum duration for individual tool executions.
+// Tools that exceed this duration have their context cancelled and receive
+// an error result. Zero (default) means no timeout.
+//
+//	agent := agentflow.NewAgent(provider,
+//	    agentflow.WithToolTimeout(30 * time.Second),
+//	)
+func WithToolTimeout(d time.Duration) Option {
+	return func(a *Agent) {
+		a.config.ToolTimeout = d
 	}
 }
 

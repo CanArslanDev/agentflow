@@ -216,10 +216,13 @@ func (a *Agent) toolDefinitions() []ToolDefinition {
 }
 
 // emit sends an event to both the callback (if set) and the channel.
+// Recovers from panic if the channel is already closed (e.g., budget exhaustion
+// terminates the loop while a streaming tool executor goroutine is still running).
 func (a *Agent) emit(events chan<- Event, ev Event) {
 	if a.config.OnEvent != nil {
 		a.config.OnEvent(ev)
 	}
+	defer func() { recover() }()
 	events <- ev
 }
 

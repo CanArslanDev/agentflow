@@ -15,13 +15,16 @@ The project has zero external dependencies in its core -- it uses only the Go st
 go build ./...
 
 # Run all unit tests (no API key required)
-go test ./... -run "Test[^I]"
+go test ./... -run "Test[^I]" -timeout 60s
 
 # Run integration tests (requires GROQ_API_KEY)
 GROQ_API_KEY=gsk-... go test ./... -run "TestIntegration_" -timeout 180s
 
-# Run everything
-GROQ_API_KEY=gsk-... go test ./... -timeout 180s
+# Run benchmarks
+go test -bench=. -benchmem -run="^$" -timeout 60s
+
+# Run with race detector (known pre-existing races in streaming executor)
+go test -run "TestRace_" -race -timeout 30s
 
 # Static analysis
 go vet ./...
@@ -31,27 +34,37 @@ go vet ./...
 
 ### Core Loop (agent.go)
 
-The agentic loop is a `for {}` in `runLoop()`:
+The agentic loop is a `for {}` in `runLoopWithState()`:
 
 ```
 for {
     1. Check context cancellation
     2. Check turn limit
     3. Check token budget
-    4. Run compaction if needed
-    5. Execute pre-model hooks
-    6. Call provider.CreateStream() -- stream response
-    7. Consume stream: emit text deltas, collect tool calls
-    8. Execute post-model hooks
-    9. If no tool calls -> return (completed)
-   10. Execute tools through pipeline (validate -> hooks -> permission -> execute -> hooks)
-   11. Apply result size limiting
-   12. Append tool results to messages
-   13. Continue loop
+    4. Run compaction if needed -> emit EventCompaction
+    5. Execute pre-model hooks -> emit EventHookBlocked if blocked
+    6. Build Request (with Metadata from hook context for trace propagation)
+    7. Apply rate limiter (Wait)
+    8. Call provider.CreateStream() with retry -> emit EventRetry on retries
+    9. Consume stream: emit text deltas, start tool execution via streaming executor
+   10. Record usage, enforce budget -> emit EventBudgetWarning
+   11. Execute post-model hooks
+   12. If no tool calls -> check turn-end hooks -> return (completed)
+   13. Execute tools through pipeline:
+       a. Validate tool exists + execution mode guard
+       b. Pre-tool hooks -> emit EventHookBlocked if blocked
+       c. Permission check -> emit EventPermissionDenied if denied
+       d. JSON Schema input validation (internal/jsonschema)
+       e. Execute with timeout (Config.ToolTimeout) and retry (Config.ToolRetries)
+       f. Apply ErrorStrategy if tool returns error
+       g. Apply result size limiting
+       h. Post-tool hooks
+   14. Append tool results to messages
+   15. Continue loop
 }
 ```
 
-The loop runs in a dedicated goroutine launched by `Agent.Run()`. Events are delivered through a buffered channel.
+The loop runs in a dedicated goroutine launched by `Agent.Run()`. Events are delivered through a buffered channel. When the loop terminates, it signals background goroutines (streaming executor) via a done channel and waits for them to finish before closing the events channel.
 
 ### Layered Design
 
@@ -60,11 +73,15 @@ Public API (agent.go, config.go)
     |
 Core Types (tool.go, message.go, event.go, hook.go, permission.go, provider.go)
     |
-Internal (internal/sse/ -- shared SSE parsing)
+Internal (internal/sse/ -- shared SSE parsing, internal/jsonschema/ -- input validation)
     |
-Providers (provider/groq, provider/openrouter, provider/fallback, provider/mock)
+Providers (provider/openai, provider/anthropic, provider/gemini, provider/groq, provider/openrouter, provider/fallback, provider/mock)
     |
-Extensions (session/, middleware/, tools/builtin/)
+Extension Packages (compactor/, team/, observability/, trigger/, plan/, skill/, task/)
+    |
+Middleware (middleware/ -- logging, metrics, recovery, circuit breaker)
+    |
+Tools (tools/builder.go, tools/typed.go, tools/builtin/)
 ```
 
 ### Key Interfaces
@@ -73,13 +90,73 @@ Extensions (session/, middleware/, tools/builtin/)
 |-----------|------|---------|
 | `Provider` | provider.go | AI model API abstraction |
 | `Stream` | provider.go | Pull-based SSE event stream |
+| `HealthChecker` | provider.go | Optional: proactive provider health check |
 | `Tool` | tool.go | Agent capability (function calling) |
 | `LocalityAware` | tool.go | Optional: declare local/remote safety |
-| `Hook` | hook.go | Lifecycle interception |
+| `Hook` | hook.go | Single-phase lifecycle interception |
+| `MultiPhaseHook` | hook.go | Multi-phase lifecycle interception |
 | `PermissionChecker` | permission.go | Tool access control |
 | `Compactor` | compactor.go | Conversation history management |
 | `SessionStore` | session.go | Conversation persistence |
 | `ResultLimiter` | result.go | Oversized result handling |
+| `RateLimiter` | ratelimit.go | Provider API call rate control |
+| `ErrorStrategy` | errors.go | Configurable tool error handling |
+
+### Config Options (config.go)
+
+All options are set via functional `Option` values passed to `NewAgent`:
+
+| Option | Purpose |
+|--------|---------|
+| `WithTool(t)` / `WithTools(t...)` | Register tools |
+| `WithHook(h)` | Register lifecycle hook |
+| `WithPermission(p)` | Set permission checker |
+| `WithMaxTurns(n)` | Limit loop iterations |
+| `WithMaxConcurrency(n)` | Parallel tool execution limit |
+| `WithSystemPrompt(s)` | System message for every model call |
+| `WithTemperature(t)` | Model temperature |
+| `WithMaxTokens(n)` | Max response tokens |
+| `WithRetryPolicy(p)` | Provider retry with exponential backoff |
+| `WithEventBufferSize(n)` | Event channel capacity |
+| `WithOnEvent(fn)` | Synchronous event callback |
+| `WithCompactor(c)` | Context compaction strategy |
+| `WithTokenBudget(b)` | Total token consumption limit |
+| `WithExecutionMode(m)` | Local vs remote tool filtering |
+| `WithResultLimiter(l)` | Custom result size limiter |
+| `WithMaxResultSize(n)` | Max characters per tool result |
+| `WithSessionStore(s)` | Enable session persistence |
+| `WithErrorStrategy(s)` | Custom tool error handling (abort/transform) |
+| `WithToolRetries(n)` | Retry failed tool executions N times |
+| `WithToolTimeout(d)` | Cancel tool execution after duration |
+| `WithRateLimiter(l)` | Rate limit provider API calls |
+| `WithLogger(l)` | Structured logging (slog.Logger) |
+| `WithDisableInputValidation()` | Skip JSON Schema validation |
+
+### Event Types (event.go)
+
+17 event types covering the full agent lifecycle:
+
+| Event | When | Key Fields |
+|-------|------|------------|
+| `EventTextDelta` | Streaming text from model | Text |
+| `EventThinkingDelta` | Streaming reasoning content | Text |
+| `EventToolStart` | Tool execution begins | ToolCall |
+| `EventToolProgress` | Tool progress update | ToolCallID, Message, Data |
+| `EventToolEnd` | Tool execution completes | ToolCall, Result, Duration |
+| `EventTurnStart` | New loop iteration | TurnNumber |
+| `EventTurnEnd` | Loop iteration or loop ends | TurnNumber, Reason, Messages |
+| `EventMessage` | Message added to history | Message |
+| `EventError` | Recoverable error | Err, Retrying, TurnCount |
+| `EventUsage` | Token usage stats | Usage, TurnCount |
+| `EventSubAgentStart` | Sub-agent spawned | Index, Task |
+| `EventSubAgentEnd` | Sub-agent completed | Index, Task, Result |
+| `EventBudgetWarning` | Token budget threshold crossed | ConsumedTokens, MaxTokens, Percentage |
+| `EventCompaction` | Context was compacted | BeforeCount, AfterCount, TurnCount |
+| `EventRetry` | Provider call being retried | Attempt, Delay, Err, TurnCount |
+| `EventPermissionDenied` | Tool blocked by permissions | ToolCall |
+| `EventHookBlocked` | Hook blocked execution | Phase, ToolCall, Reason, TurnCount |
+
+Use `FilterEvents(ch, types...)` to consume only specific event types.
 
 ## Code Conventions
 
@@ -94,13 +171,15 @@ Extensions (session/, middleware/, tools/builtin/)
 ### Patterns Used
 
 - **Functional options**: `NewAgent(provider, WithTool(...), WithMaxTurns(10))`
-- **Optional interfaces**: `LocalityAware` extends `Tool` without breaking existing implementations
+- **Optional interfaces**: `LocalityAware`, `MultiPhaseHook`, `HealthChecker` extend base interfaces without breaking existing implementations
 - **Discriminated unions**: `Event.Type` determines which field is set
 - **Pull-based streams**: `Stream.Next()` returns `(StreamEvent, error)`, `io.EOF` signals completion
 - **Channel-based event delivery**: `Agent.Run()` returns `<-chan Event`
+- **Generic typed tools**: `tools.NewTyped[I]()` for type-safe tool implementations
 
-### Tool Implementation Pattern
+### Tool Implementation Patterns
 
+**Interface-based (full control):**
 ```go
 type myTool struct{}
 
@@ -115,6 +194,32 @@ func (t *myTool) Execute(ctx context.Context, input json.RawMessage, progress ag
 }
 ```
 
+**Builder pattern (less boilerplate):**
+```go
+tool := tools.New("my_tool", "Description").
+    WithSchema(map[string]any{...}).
+    ConcurrencySafe(true).ReadOnly(true).RemoteSafe().
+    WithExecute(func(ctx context.Context, input json.RawMessage, p agentflow.ProgressFunc) (*agentflow.ToolResult, error) {
+        // implementation
+    }).Build()
+```
+
+**Generic typed (type-safe, auto schema):**
+```go
+type SearchInput struct {
+    Query      string `json:"query" description:"Search query"`
+    MaxResults int    `json:"max_results,omitempty" description:"Max results"`
+}
+
+tool := tools.NewTyped[SearchInput](
+    "search", "Search the web",
+    []string{"query"}, // required fields
+    func(ctx context.Context, input SearchInput, p agentflow.ProgressFunc) (*agentflow.ToolResult, error) {
+        // input.Query is already typed -- no json.Unmarshal needed
+    },
+)
+```
+
 ### Provider Implementation Patterns
 
 **OpenAI-compatible providers** (OpenAI, Groq, OpenRouter) use the shared `internal/sse` package:
@@ -123,6 +228,10 @@ func (t *myTool) Execute(ctx context.Context, input json.RawMessage, progress ag
 func (p *Provider) CreateStream(ctx context.Context, req *agentflow.Request) (agentflow.Stream, error) {
     body := sse.BuildRequestBody(p.model, req)  // shared request conversion
     // ... HTTP request with Authorization: Bearer header ...
+    // Propagate request metadata as HTTP headers:
+    for k, v := range req.Metadata {
+        httpReq.Header.Set(k, v)
+    }
     return sse.NewStream(resp), nil              // shared SSE parser
 }
 ```
@@ -139,11 +248,66 @@ func (p *Provider) CreateStream(ctx context.Context, req *agentflow.Request) (ag
 - Auth via `?key=` URL parameter (not header)
 - Uses `generativelanguage.googleapis.com` base URL
 
-### Test Naming
+All providers propagate `Request.Metadata` as HTTP headers for trace context propagation.
 
-- Unit tests: `TestFeatureName` -- no API calls, uses mock provider
-- Integration tests: `TestIntegration_FeatureName` -- requires `GROQ_API_KEY`, skips otherwise
-- Tests in provider packages: `TestGroqSimpleChat`, `TestFallback_PrimaryFails`, etc.
+### Input Validation (internal/jsonschema)
+
+Tool inputs are validated against `tool.InputSchema()` before execution:
+- Supports: `type` (object, string, integer, number, boolean, array), `required`, `enum`, `properties`, `additionalProperties`, `items`
+- Validation errors are returned to the model as `ToolResult{IsError: true}` so it can self-correct
+- Disable with `WithDisableInputValidation()` if schemas are informational only
+- Validation runs after permission check, before tool execution
+
+### Rate Limiting (ratelimit.go)
+
+- `RateLimiter` interface: `Wait(ctx) error`
+- `TokenBucketLimiter`: token bucket with burst capacity and steady refill rate
+- Applied before every `CreateStream` call (including retries)
+- Example: `NewTokenBucketLimiter(10, time.Second)` = 10 req/sec with burst of 10
+
+### Structured Logging
+
+When `WithLogger(slog.Logger)` is set, the agent logs:
+- Model call start/completion (turn, message count, duration, tool call count)
+- Context compaction (before/after message count)
+- Token budget warnings (consumed, max, percentage)
+- Provider retry attempts (attempt number, delay, error)
+- Tool input validation failures (tool name, error)
+- Tool execution retries (tool name, attempt, max attempts)
+
+Logger is nil by default (zero overhead). Does not conflict with middleware logging.
+
+### Trace Context Propagation
+
+Hooks can propagate trace context to provider HTTP requests:
+1. Hook writes `hc.Metadata["request:traceparent"] = "00-traceID-spanID-01"`
+2. Agent copies `request:*` prefixed metadata into `Request.Metadata`
+3. Provider sends `Request.Metadata` entries as HTTP headers
+4. The `observability.Tracer` does this automatically via its PreModelCall hook
+
+### Middleware
+
+| Middleware | File | Pattern |
+|-----------|------|---------|
+| `Logging(logger)` | logging.go | PreToolUse + PostToolUse hooks; logs tool start/end with duration |
+| `NewMetrics()` | metrics.go | PreToolUse + PostToolUse + PreModelCall; atomic counters, per-tool stats |
+| `Recovery(logger)` | recovery.go | PostToolUse; structured logging of tool panic stack traces |
+| `MaxTurnsGuard(n, logger)` | recovery.go | PreModelCall; warns at 80% of turn limit |
+| `NewCircuitBreaker(threshold, reset)` | circuitbreaker.go | PreToolUse + PostToolUse; blocks tool after N consecutive failures, half-open recovery |
+
+### Tool Execution Pipeline
+
+Tool execution in `executeSingleTool()` follows this pipeline:
+
+1. **Tool lookup** -- unknown tool returns error to model
+2. **Execution mode guard** -- blocks local-only tools in remote mode
+3. **Pre-tool hooks** -- can block or modify input; emits `EventHookBlocked`
+4. **Permission check** -- can deny; emits `EventPermissionDenied`
+5. **Input validation** -- JSON Schema check against `InputSchema()`
+6. **Execute** -- with `context.WithTimeout` if `ToolTimeout` set, with retry loop if `ToolRetries` > 0
+7. **Error strategy** -- `ErrorStrategy.OnToolError()` can transform or abort
+8. **Result limiting** -- `ResultLimiter.Limit()` if result exceeds `MaxResultChars`
+9. **Post-tool hooks** -- metrics, logging, observability
 
 ### Execution Mode Safety
 
@@ -152,12 +316,22 @@ func (p *Provider) CreateStream(ctx context.Context, req *agentflow.Request) (ag
 - A guard in `executeSingleTool()` blocks local tools even if called by name (defense in depth)
 - New built-in tools must declare their `Locality()` explicitly
 
-### Result Limiting
+### Streaming Tool Executor
 
-- The `limitResult()` method in agent.go applies after every tool execution
-- Error results (`IsError: true`) are never truncated
-- Default limiter is `TruncateLimiter` with 80/20 head/tail split
-- Default max size is 50,000 characters
+`streaming_executor.go` overlaps model generation with tool execution:
+- Tools are submitted for execution as they arrive from the stream (not waiting for stream end)
+- Background goroutines are tracked via `loopState.bgWork` WaitGroup
+- When the loop terminates, `state.done` channel is closed, cancelling in-flight tool goroutines
+- `bgWork.Wait()` ensures all goroutines finish before the events channel is closed
+
+### Agent Cloning
+
+`Agent.Clone(opts...)` creates a copy of the agent with overridden options:
+```go
+base := agentflow.NewAgent(provider, agentflow.WithMaxTurns(10))
+researcher := base.Clone(agentflow.WithSystemPrompt("You are a researcher."))
+writer := base.Clone(agentflow.WithSystemPrompt("You are a writer."))
+```
 
 ### Budget Tracking
 
@@ -170,36 +344,37 @@ func (p *Provider) CreateStream(ctx context.Context, req *agentflow.Request) (ag
 
 ```
 agentflow/
-    -- Core package (root) --
-    agent.go                 # Agent struct, Run(), RunSync(), RunSession(), Resume()
-    config.go                # Config struct, all WithXxx() option functions
+    -- Core package (root): 17 source files --
+    agent.go                 # Agent struct, Run(), RunSync(), RunSession(), Resume(), Clone()
+    config.go                # Config struct, 22 WithXxx() option functions
     tool.go                  # Tool interface, ExecutionMode, ToolLocality, LocalityAware
     message.go               # Message, ContentBlock (text, tool_call, tool_result, image)
-    event.go                 # Event discriminated union, all event types
-    hook.go                  # Hook interface, HookFunc adapter, HookContext, HookAction
+    event.go                 # 17 EventTypes, Event discriminated union, FilterEvents()
+    hook.go                  # Hook, MultiPhaseHook, HookFunc adapter, HookContext, HookAction
     permission.go            # PermissionChecker, AllowAll, DenyList, AllowList, Chain
-    provider.go              # Provider, Stream, StreamEvent, Usage
+    provider.go              # Provider, Stream, StreamEvent, Usage, HealthChecker, IsHealthy
+    ratelimit.go             # RateLimiter interface, TokenBucketLimiter
     subagent.go              # SubAgentConfig, SpawnChild, SpawnChildren, Orchestrate, SubAgentTool
     session.go               # SessionStore interface, Session struct, GenerateSessionID
     budget.go                # TokenBudget, budgetTracker
     result.go                # ResultLimiter, TruncateLimiter, HeadTailLimiter, NoLimiter
-    compactor.go             # Compactor interface
+    compactor.go             # Compactor interface (17 lines)
     streaming_executor.go    # Streaming tool executor (overlaps model gen with tool exec)
-    errors.go                # Sentinel errors, ProviderError, ToolError
+    errors.go                # Sentinel errors, ProviderError, ToolError, ErrorStrategy
     doc.go                   # Package-level documentation
 
     -- Extension packages --
-    compactor/               # Compactor implementations (sliding, token, summary, staged)
-    team/                    # Multi-agent team coordination, mailbox, shared memory
-    observability/           # Tracer (spans) and CostTracker (token pricing)
-    trigger/                 # Scheduled agent execution on intervals
-    plan/                    # Plan mode, PlanAndExecute, memory extraction
-    skill/                   # Skill registry, execution, and parsing
-    task/                    # Task store for agent work tracking
+    compactor/               # SlidingWindow, TokenWindow, Summary, Staged, ContextCollapser
+    team/                    # Team, Member, Mailbox, SharedMemory, communication tools
+    observability/           # Tracer (spans, trace context), CostTracker (token pricing)
+    trigger/                 # Trigger, Scheduler (scheduled agent execution)
+    plan/                    # Plan(), PlanAndExecute(), ExtractMemories()
+    skill/                   # Skill, Registry, Execute(), Parse()
+    task/                    # Task, Store, Status (work tracking)
 
     -- Providers --
     provider/openai/         # OpenAI Chat Completions (uses internal/sse)
-    provider/anthropic/      # Anthropic Messages API (custom SSE parser -- different format)
+    provider/anthropic/      # Anthropic Messages API (custom SSE parser)
     provider/gemini/         # Google Gemini generateContent (custom SSE parser)
     provider/groq/           # Groq API (uses internal/sse, OpenAI-compatible)
     provider/openrouter/     # OpenRouter API (uses internal/sse, OpenAI-compatible)
@@ -208,22 +383,26 @@ agentflow/
 
     -- Internal --
     internal/sse/            # Shared OpenAI-compatible SSE parser and request builder
+    internal/jsonschema/     # Lightweight JSON Schema validator (type, required, enum, properties)
 
     -- Session stores --
     session/filestore/       # JSON file-based persistence
     session/memstore/        # In-memory persistence (testing)
 
     -- Middleware --
-    middleware/logging.go    # slog-based tool execution logging
-    middleware/metrics.go    # Thread-safe tool call metrics
-    middleware/recovery.go   # Panic logging, turn limit guard
+    middleware/logging.go        # slog-based tool execution logging
+    middleware/metrics.go        # Thread-safe tool call metrics
+    middleware/recovery.go       # Panic logging, turn limit guard
+    middleware/circuitbreaker.go # Circuit breaker (open/half-open/closed)
 
     -- Tools --
     tools/builder.go         # Fluent ToolBuilder API
+    tools/typed.go           # Generic TypedTool[I] with auto schema generation
     tools/builtin/           # 11 ready-to-use tools (bash, files, search, http, etc.)
 
     -- Examples --
     _examples/basic/         # Minimal agent
+    _examples/chat/          # Interactive chat loop
     _examples/custom_tools/  # Multi-tool agent with metrics
     _examples/streaming/     # HTTP SSE endpoint
 ```
@@ -235,13 +414,16 @@ agentflow/
 1. Create `provider/newprovider/` directory
 2. Implement `agentflow.Provider` interface
 3. If OpenAI-compatible, use `internal/sse.BuildRequestBody()` and `sse.NewStream()`
-4. Add integration test with `t.Skip` guard for API key
-5. Document in README provider table
+4. Propagate `req.Metadata` as HTTP headers for trace context
+5. Optionally implement `agentflow.HealthChecker` for proactive health checking
+6. Add unit test with `httptest.NewServer` (see `provider/openai/openai_test.go` for pattern)
+7. Add integration test with `t.Skip` guard for API key
+8. Document in README provider table
 
 ### Adding a New Built-in Tool
 
 1. Create file in `tools/builtin/`
-2. Implement `agentflow.Tool` interface
+2. Implement `agentflow.Tool` interface (or use `tools.NewTyped[I]` for type-safe tools)
 3. Implement `agentflow.LocalityAware` with correct locality
 4. Add to `registry.go` in the appropriate preset functions (All, Remote, ReadOnly)
 5. Add unit test in `builtin_test.go`
@@ -250,8 +432,9 @@ agentflow/
 
 1. Create file in `middleware/`
 2. Return `[]agentflow.Hook` or `agentflow.Hook`
-3. Use `agentflow.HookFunc` adapter for simple cases
+3. Use `agentflow.HookFunc` adapter for simple cases, or implement `agentflow.MultiPhaseHook` for hooks that fire at multiple phases
 4. Store timing data in `HookContext.Metadata` (keyed by tool call ID)
+5. For trace propagation, write `request:` prefixed keys to `HookContext.Metadata`
 
 ### Adding a New Session Store
 
@@ -260,13 +443,53 @@ agentflow/
 3. Return `agentflow.ErrSessionNotFound` for missing sessions
 4. Ensure thread safety for concurrent access
 
+### Adding a New Compactor
+
+1. Create file in `compactor/` directory
+2. Implement `agentflow.Compactor` interface (`ShouldCompact`, `Compact`)
+3. Use `compactor.NewCompactionNotice()` for system messages about discarded context
+4. Consider composability with `compactor.NewStaged()` for multi-stage strategies
+
 ## Testing Guidelines
 
 - Every new feature must have unit tests using the mock provider
+- Provider tests use `httptest.NewServer` for mock HTTP responses (see `provider/openai/openai_test.go`)
 - Integration tests use Groq API and must skip when `GROQ_API_KEY` is not set
 - Integration tests should use `context.WithTimeout` to prevent hangs
-- When running all integration tests together, rate limits may cause failures -- run them sequentially with pauses if needed
+- When running all integration tests together, rate limits may cause failures -- re-run failing tests individually
 - Test names: `TestFeature_Scenario` for units, `TestIntegration_Feature` for integration
+- Race tests: `TestRace_*` in `race_test.go` -- run with `-race` flag
+- Benchmarks: `Benchmark*` in `benchmark_test.go` -- run with `-bench=.`
+
+### Test File Locations
+
+| Test File | Package | What It Tests |
+|-----------|---------|---------------|
+| `agent_test.go` | root | Core agent loop, RunSync, hooks |
+| `budget_test.go` | root | Token budget enforcement |
+| `compactor_test.go` | root | Compactor integration with agent |
+| `execution_mode_test.go` | root | Local/remote mode tool filtering |
+| `integration_test.go` | root | Multi-turn chat, tool use, session, sub-agent |
+| `multimodal_test.go` | root | Image/vision support |
+| `result_test.go` | root | Result limiting strategies |
+| `session_test.go` | root | Session persistence |
+| `subagent_test.go` | root | Sub-agent spawning |
+| `streaming_executor_test.go` | root | Streaming tool execution |
+| `ratelimit_test.go` | root | Token bucket limiter |
+| `race_test.go` | root | Concurrent access safety |
+| `benchmark_test.go` | root | Performance benchmarks |
+| `task/task_test.go` | task | Task create, update, list |
+| `skill/skill_test.go` | skill | Skill summarize, translate, list+run |
+| `team/team_test.go` | team | Team run all, shared memory |
+| `plan/plan_test.go` | plan | Plan, PlanAndExecute, memory extraction |
+| `trigger/trigger_test.go` | trigger | Trigger execution |
+| `observability/observability_test.go` | observability | Tracer, cost tracker |
+| `middleware/circuitbreaker_test.go` | middleware | Circuit breaker, timeout, retry |
+| `provider/openai/openai_test.go` | openai | Mock HTTP: text, tool call, error, timeout, metadata |
+| `provider/anthropic/anthropic_test.go` | anthropic | Mock HTTP: text, tool call, error |
+| `provider/gemini/gemini_test.go` | gemini | Mock HTTP: text, tool call, error |
+| `provider/fallback/fallback_test.go` | fallback | Cascading failover logic |
+| `internal/jsonschema/validate_test.go` | jsonschema | Schema validation: types, required, enum, nested |
 
 ## Post-Change Testing Workflow
 
@@ -292,3 +515,7 @@ After every code change, you MUST follow this workflow:
    - Report which tests passed and which failed with root cause analysis.
 
 6. **Never commit code that fails `go build` or `go vet`.**
+
+## Known Issues
+
+- **Streaming executor race conditions**: The streaming tool executor shares `loopState` with the main loop. While `state.done` channel and `bgWork` WaitGroup prevent send-on-closed-channel panics, the Go race detector may still flag concurrent access to `state.messages` and `state.metadata` between the main loop goroutine and streaming executor goroutines. The message snapshots in tool hooks mitigate this for hook contexts, but a full fix requires adding a mutex to `loopState` or restructuring the streaming executor to not share mutable state.

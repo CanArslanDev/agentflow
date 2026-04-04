@@ -20,6 +20,7 @@ func All() []agentflow.Tool {
 		Grep(),
 		HTTPRequest(),
 		WebSearch(),
+		DeepSearch(),
 		Sleep(),
 	}
 }
@@ -36,6 +37,7 @@ func Remote() []agentflow.Tool {
 	return []agentflow.Tool{
 		HTTPRequest(),
 		WebSearch(),
+		DeepSearch(),
 		Sleep(),
 	}
 }
@@ -49,6 +51,7 @@ func ReadOnly() []agentflow.Tool {
 		Grep(),
 		HTTPRequest(),
 		WebSearch(),
+		DeepSearch(),
 		Sleep(),
 	}
 }

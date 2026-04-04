@@ -272,8 +272,8 @@ func TestAskUser(t *testing.T) {
 
 func TestAll(t *testing.T) {
 	all := builtin.All()
-	if len(all) != 10 {
-		t.Errorf("expected 10 tools, got %d", len(all))
+	if len(all) != 11 {
+		t.Errorf("expected 11 tools, got %d", len(all))
 	}
 
 	names := make(map[string]bool)
@@ -281,7 +281,7 @@ func TestAll(t *testing.T) {
 		names[tool.Name()] = true
 	}
 
-	expected := []string{"bash", "read_file", "write_file", "edit_file", "list_dir", "glob", "grep", "http_request", "web_search", "sleep"}
+	expected := []string{"bash", "read_file", "write_file", "edit_file", "list_dir", "glob", "grep", "http_request", "web_search", "deep_search", "sleep"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("missing tool: %s", name)

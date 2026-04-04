@@ -58,6 +58,10 @@ type Config struct {
 	// Default: false (validation enabled). Set to true if tool schemas are
 	// informational only and should not block execution on mismatch.
 	DisableInputValidation bool
+
+	// RateLimiter controls the rate of provider API calls. When set, the agent
+	// waits for permission before each CreateStream call. nil means no rate limiting.
+	RateLimiter RateLimiter
 }
 
 // RetryPolicy configures automatic retries for transient errors.
@@ -228,6 +232,19 @@ func WithMaxResultSize(chars int) Option {
 func WithSessionStore(store SessionStore) Option {
 	return func(a *Agent) {
 		a.sessionStore = store
+	}
+}
+
+// WithRateLimiter sets a rate limiter for provider API calls. The agent will
+// call limiter.Wait() before each model request, blocking if the rate limit
+// is exceeded.
+//
+//	agent := agentflow.NewAgent(provider,
+//	    agentflow.WithRateLimiter(agentflow.NewTokenBucketLimiter(10, time.Second)),
+//	)
+func WithRateLimiter(limiter RateLimiter) Option {
+	return func(a *Agent) {
+		a.config.RateLimiter = limiter
 	}
 }
 

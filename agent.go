@@ -702,10 +702,13 @@ func (a *Agent) callToolWithRecovery(ctx context.Context, tool Tool, input []byt
 	return tool.Execute(ctx, input, progress)
 }
 
-// createStreamWithRetry wraps provider.CreateStream with retry logic.
+// createStreamWithRetry wraps provider.CreateStream with rate limiting and retry logic.
 func (a *Agent) createStreamWithRetry(ctx context.Context, req *Request) (Stream, error) {
 	policy := a.config.RetryPolicy
 	if policy == nil || policy.MaxRetries <= 0 {
+		if err := a.waitRateLimit(ctx); err != nil {
+			return nil, err
+		}
 		return a.provider.CreateStream(ctx, req)
 	}
 
@@ -723,6 +726,9 @@ func (a *Agent) createStreamWithRetry(ctx context.Context, req *Request) (Stream
 			}
 		}
 
+		if err := a.waitRateLimit(ctx); err != nil {
+			return nil, err
+		}
 		stream, err := a.provider.CreateStream(ctx, req)
 		if err == nil {
 			return stream, nil
@@ -733,6 +739,14 @@ func (a *Agent) createStreamWithRetry(ctx context.Context, req *Request) (Stream
 		}
 	}
 	return nil, lastErr
+}
+
+// waitRateLimit blocks until the rate limiter allows the request, if configured.
+func (a *Agent) waitRateLimit(ctx context.Context) error {
+	if a.config.RateLimiter == nil {
+		return nil
+	}
+	return a.config.RateLimiter.Wait(ctx)
 }
 
 // runHooks executes all hooks for a given phase. Returns true if any hook blocked.

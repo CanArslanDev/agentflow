@@ -6,6 +6,8 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"github.com/CanArslanDev/agentflow/internal/jsonschema"
 )
 
 // Agent orchestrates the agentic loop: model calls, tool execution, and message
@@ -626,6 +628,18 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 	}
 	if perm == PermissionDeny {
 		return emitEarlyReturn(&ToolResult{Content: "Permission denied for tool \"" + call.Name + "\"", IsError: true})
+	}
+
+	// Input validation against tool's JSON Schema.
+	if !a.config.DisableInputValidation {
+		if schema := tool.InputSchema(); len(schema) > 0 {
+			if err := jsonschema.Validate(schema, currentCall.Input); err != nil {
+				return emitEarlyReturn(&ToolResult{
+					Content: "input validation error for tool \"" + call.Name + "\": " + err.Error(),
+					IsError: true,
+				})
+			}
+		}
 	}
 
 	// Execute.

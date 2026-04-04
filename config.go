@@ -53,6 +53,11 @@ type Config struct {
 	// ExecutionMode controls which tools are visible to the model.
 	// ModeLocal (default) allows all tools. ModeRemote restricts to remote-safe only.
 	ExecutionMode ExecutionMode
+
+	// DisableInputValidation skips JSON Schema validation of tool inputs.
+	// Default: false (validation enabled). Set to true if tool schemas are
+	// informational only and should not block execution on mismatch.
+	DisableInputValidation bool
 }
 
 // RetryPolicy configures automatic retries for transient errors.
@@ -223,5 +228,14 @@ func WithMaxResultSize(chars int) Option {
 func WithSessionStore(store SessionStore) Option {
 	return func(a *Agent) {
 		a.sessionStore = store
+	}
+}
+
+// WithDisableInputValidation disables JSON Schema validation of tool inputs.
+// Use this if tool schemas are informational only or if validation causes
+// false positives with a particular model's output format.
+func WithDisableInputValidation() Option {
+	return func(a *Agent) {
+		a.config.DisableInputValidation = true
 	}
 }

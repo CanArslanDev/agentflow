@@ -79,3 +79,31 @@ func IsRetryableError(err error) bool {
 	}
 	return false
 }
+
+// ErrorAction determines how the agent loop handles a tool error.
+type ErrorAction int
+
+const (
+	// ErrorActionDefault sends the error to the model as-is (default behavior).
+	ErrorActionDefault ErrorAction = iota
+
+	// ErrorActionAbort terminates the agent loop immediately.
+	ErrorActionAbort
+)
+
+// ErrorStrategy controls how the agent handles tool execution errors.
+// Implementations can transform error results, suppress them, or abort the loop.
+type ErrorStrategy interface {
+	// OnToolError is called when a tool returns IsError: true. It receives the
+	// tool call and the error result, and returns a (possibly modified) result
+	// and an action.
+	OnToolError(call *ToolCall, result *ToolResult) (*ToolResult, ErrorAction)
+}
+
+// ErrorStrategyFunc adapts a function to the ErrorStrategy interface.
+type ErrorStrategyFunc func(call *ToolCall, result *ToolResult) (*ToolResult, ErrorAction)
+
+// OnToolError delegates to the wrapped function.
+func (f ErrorStrategyFunc) OnToolError(call *ToolCall, result *ToolResult) (*ToolResult, ErrorAction) {
+	return f(call, result)
+}

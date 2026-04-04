@@ -83,6 +83,17 @@ type HookAction struct {
 	InjectMessages []Message
 }
 
+// MultiPhaseHook is an optional interface for hooks that fire at multiple phases.
+// Hooks implementing this interface have their Execute called for each phase
+// returned by Phases(), eliminating the need to register duplicate hooks.
+type MultiPhaseHook interface {
+	// Phases returns all phases this hook should fire at.
+	Phases() []HookPhase
+
+	// Execute runs the hook logic for the given phase.
+	Execute(ctx context.Context, hc *HookContext) (*HookAction, error)
+}
+
 // HookFunc is an adapter that allows ordinary functions to be used as hooks.
 // It pairs a phase with a function, eliminating the need for a struct that
 // implements the Hook interface for simple cases.

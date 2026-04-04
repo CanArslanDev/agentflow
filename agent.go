@@ -743,6 +743,21 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 	}
 	duration := time.Since(start)
 
+	// Apply error strategy if the tool returned an error.
+	if result != nil && result.IsError && a.config.ErrorStrategy != nil {
+		newResult, action := a.config.ErrorStrategy.OnToolError(&call, result)
+		if newResult != nil {
+			result = newResult
+		}
+		if action == ErrorActionAbort {
+			a.emit(events, Event{
+				Type: EventToolEnd,
+				ToolEnd: &ToolEndEvent{ToolCall: call, Result: *result, Duration: duration},
+			})
+			return toolExecResult{callID: call.ID, result: &ToolResult{Content: "aborted by error strategy", IsError: true}}
+		}
+	}
+
 	// Apply result size limiting.
 	result = a.limitResult(result)
 
@@ -876,11 +891,22 @@ func (a *Agent) runHooks(ctx context.Context, events chan<- Event, phase HookPha
 }
 
 // hooksForPhase returns all registered hooks that fire at the given phase.
+// Supports both single-phase Hook and MultiPhaseHook interfaces.
 func (a *Agent) hooksForPhase(phase HookPhase) []Hook {
 	var matched []Hook
 	for _, h := range a.hooks {
 		if h.Phase() == phase {
 			matched = append(matched, h)
+			continue
+		}
+		// Check if this hook implements MultiPhaseHook.
+		if mph, ok := h.(MultiPhaseHook); ok {
+			for _, p := range mph.Phases() {
+				if p == phase {
+					matched = append(matched, h)
+					break
+				}
+			}
 		}
 	}
 	return matched

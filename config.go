@@ -76,6 +76,11 @@ type Config struct {
 	// and an error result is returned. Zero means no timeout (default).
 	ToolTimeout time.Duration
 
+	// ErrorStrategy controls how tool execution errors are handled. When set,
+	// it is called after a tool returns IsError: true, allowing error transformation
+	// or loop abortion. nil uses default behavior (send error to model as-is).
+	ErrorStrategy ErrorStrategy
+
 	// Logger enables structured logging for agent lifecycle events: model calls,
 	// retries, compaction, budget warnings, and validation errors. nil disables
 	// logging (zero overhead). Use log/slog for structured output.
@@ -250,6 +255,25 @@ func WithMaxResultSize(chars int) Option {
 func WithSessionStore(store SessionStore) Option {
 	return func(a *Agent) {
 		a.sessionStore = store
+	}
+}
+
+// WithErrorStrategy sets a custom error handling strategy for tool failures.
+// The strategy can transform error results or abort the loop entirely.
+//
+//	agent := agentflow.NewAgent(provider,
+//	    agentflow.WithErrorStrategy(agentflow.ErrorStrategyFunc(
+//	        func(call *agentflow.ToolCall, result *agentflow.ToolResult) (*agentflow.ToolResult, agentflow.ErrorAction) {
+//	            if call.Name == "critical_tool" {
+//	                return result, agentflow.ErrorActionAbort
+//	            }
+//	            return result, agentflow.ErrorActionDefault
+//	        },
+//	    )),
+//	)
+func WithErrorStrategy(s ErrorStrategy) Option {
+	return func(a *Agent) {
+		a.config.ErrorStrategy = s
 	}
 }
 

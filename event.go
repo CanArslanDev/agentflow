@@ -44,6 +44,18 @@ const (
 
 	// EventBudgetWarning signals that token consumption crossed the warning threshold.
 	EventBudgetWarning
+
+	// EventCompaction signals that conversation history was compacted.
+	EventCompaction
+
+	// EventRetry signals that a provider call is being retried after a transient error.
+	EventRetry
+
+	// EventPermissionDenied signals that a tool call was blocked by the permission checker.
+	EventPermissionDenied
+
+	// EventHookBlocked signals that a hook blocked tool execution or the model call.
+	EventHookBlocked
 )
 
 // Event is the primary output type of the agentic loop. It is a discriminated union
@@ -66,7 +78,11 @@ type Event struct {
 	Usage         *UsageEvent          // Type == EventUsage
 	SubAgentStart *SubAgentStartEvent  // Type == EventSubAgentStart
 	SubAgentEnd   *SubAgentEndEvent    // Type == EventSubAgentEnd
-	BudgetWarning *BudgetWarningEvent  // Type == EventBudgetWarning
+	BudgetWarning    *BudgetWarningEvent    // Type == EventBudgetWarning
+	Compaction       *CompactionEvent       // Type == EventCompaction
+	Retry            *RetryEvent            // Type == EventRetry
+	PermissionDenied *PermissionDeniedEvent // Type == EventPermissionDenied
+	HookBlocked      *HookBlockedEvent      // Type == EventHookBlocked
 
 	// SubAgentIndex identifies which child agent emitted this event.
 	// Zero for the parent agent's own events. Set by SpawnChildren.
@@ -143,6 +159,34 @@ type BudgetWarningEvent struct {
 	ConsumedTokens int     // Total tokens consumed so far.
 	MaxTokens      int     // The configured budget limit.
 	Percentage     float64 // Consumption as a fraction (0.0–1.0).
+}
+
+// CompactionEvent signals that conversation history was compacted.
+type CompactionEvent struct {
+	BeforeCount int // Message count before compaction.
+	AfterCount  int // Message count after compaction.
+	TurnCount   int
+}
+
+// RetryEvent signals that a provider call is being retried.
+type RetryEvent struct {
+	Attempt   int           // Current retry attempt (1-based).
+	Delay     time.Duration // Delay before this retry.
+	Err       error         // The error that triggered the retry.
+	TurnCount int
+}
+
+// PermissionDeniedEvent signals that a tool call was blocked by permissions.
+type PermissionDeniedEvent struct {
+	ToolCall ToolCall
+}
+
+// HookBlockedEvent signals that a hook blocked execution.
+type HookBlockedEvent struct {
+	Phase      HookPhase
+	ToolCall   *ToolCall // Non-nil for PreToolUse blocks.
+	Reason     string
+	TurnCount  int
 }
 
 // SubAgentStartEvent signals that a sub-agent has been spawned.

@@ -276,6 +276,14 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 					slog.Int("before", beforeCount),
 					slog.Int("after", len(compacted)),
 				)
+				a.emit(events, Event{
+					Type: EventCompaction,
+					Compaction: &CompactionEvent{
+						BeforeCount: beforeCount,
+						AfterCount:  len(compacted),
+						TurnCount:   state.turnCount,
+					},
+				})
 			} else {
 				a.logWarn("compaction failed", slog.Int("turn", state.turnCount), slog.String("error", err.Error()))
 			}
@@ -313,7 +321,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			slog.Int("tools", len(req.Tools)),
 		)
 
-		stream, err := a.createStreamWithRetry(ctx, req)
+		stream, err := a.createStreamWithRetry(ctx, req, events)
 		if err != nil {
 			a.logError("model call failed", slog.Int("turn", state.turnCount), slog.String("error", err.Error()))
 			a.emit(events, Event{
@@ -642,6 +650,15 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 				if reason == "" {
 					reason = "blocked by hook"
 				}
+				a.emit(events, Event{
+					Type: EventHookBlocked,
+					HookBlocked: &HookBlockedEvent{
+						Phase:     HookPreToolUse,
+						ToolCall:  &call,
+						Reason:    reason,
+						TurnCount: state.turnCount,
+					},
+				})
 				return emitEarlyReturn(&ToolResult{Content: reason, IsError: true})
 			}
 			if action.ModifiedInput != nil {
@@ -656,6 +673,10 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 		return emitEarlyReturn(&ToolResult{Content: "permission check error: " + err.Error(), IsError: true})
 	}
 	if perm == PermissionDeny {
+		a.emit(events, Event{
+			Type:             EventPermissionDenied,
+			PermissionDenied: &PermissionDeniedEvent{ToolCall: call},
+		})
 		return emitEarlyReturn(&ToolResult{Content: "Permission denied for tool \"" + call.Name + "\"", IsError: true})
 	}
 
@@ -764,7 +785,7 @@ func (a *Agent) callToolWithRecovery(ctx context.Context, tool Tool, input []byt
 }
 
 // createStreamWithRetry wraps provider.CreateStream with rate limiting and retry logic.
-func (a *Agent) createStreamWithRetry(ctx context.Context, req *Request) (Stream, error) {
+func (a *Agent) createStreamWithRetry(ctx context.Context, req *Request, events chan<- Event) (Stream, error) {
 	policy := a.config.RetryPolicy
 	if policy == nil || policy.MaxRetries <= 0 {
 		if err := a.waitRateLimit(ctx); err != nil {
@@ -785,6 +806,14 @@ func (a *Agent) createStreamWithRetry(ctx context.Context, req *Request) (Stream
 				slog.Duration("delay", delay),
 				slog.String("error", lastErr.Error()),
 			)
+			a.emit(events, Event{
+				Type: EventRetry,
+				Retry: &RetryEvent{
+					Attempt: attempt,
+					Delay:   delay,
+					Err:     lastErr,
+				},
+			})
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
@@ -824,6 +853,18 @@ func (a *Agent) runHooks(ctx context.Context, events chan<- Event, phase HookPha
 		}
 		if action != nil {
 			if action.Block {
+				reason := action.BlockReason
+				if reason == "" {
+					reason = "blocked by hook"
+				}
+				a.emit(events, Event{
+					Type: EventHookBlocked,
+					HookBlocked: &HookBlockedEvent{
+						Phase:     phase,
+						Reason:    reason,
+						TurnCount: hc.TurnCount,
+					},
+				})
 				return true
 			}
 			if len(action.InjectMessages) > 0 {

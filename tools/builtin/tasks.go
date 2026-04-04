@@ -7,16 +7,17 @@ import (
 	"strings"
 
 	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/task"
 )
 
 // TaskTools returns the set of task management tools that share the given store.
 // Register all of them together so the agent can create, update, list, and get tasks.
 //
-//	store := agentflow.NewTaskStore()
+//	store := task.NewStore()
 //	agent := agentflow.NewAgent(provider,
 //	    agentflow.WithTools(builtin.TaskTools(store)...),
 //	)
-func TaskTools(store *agentflow.TaskStore) []agentflow.Tool {
+func TaskTools(store *task.Store) []agentflow.Tool {
 	return []agentflow.Tool{
 		&taskCreateTool{store: store},
 		&taskUpdateTool{store: store},
@@ -27,7 +28,7 @@ func TaskTools(store *agentflow.TaskStore) []agentflow.Tool {
 
 // --- task_create ---
 
-type taskCreateTool struct{ store *agentflow.TaskStore }
+type taskCreateTool struct{ store *task.Store }
 
 func (t *taskCreateTool) Name() string { return "task_create" }
 func (t *taskCreateTool) Description() string {
@@ -65,7 +66,7 @@ func (t *taskCreateTool) Locality() agentflow.ToolLocality          { return age
 
 // --- task_update ---
 
-type taskUpdateTool struct{ store *agentflow.TaskStore }
+type taskUpdateTool struct{ store *task.Store }
 
 func (t *taskUpdateTool) Name() string { return "task_update" }
 func (t *taskUpdateTool) Description() string {
@@ -92,9 +93,9 @@ func (t *taskUpdateTool) Execute(_ context.Context, input json.RawMessage, _ age
 		return &agentflow.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
 	}
 
-	status := agentflow.TaskStatus(p.Status)
+	status := task.Status(p.Status)
 	switch status {
-	case agentflow.TaskPending, agentflow.TaskInProgress, agentflow.TaskCompleted, agentflow.TaskFailed:
+	case task.Pending, task.InProgress, task.Completed, task.Failed:
 	default:
 		return &agentflow.ToolResult{Content: "invalid status: " + p.Status, IsError: true}, nil
 	}
@@ -113,7 +114,7 @@ func (t *taskUpdateTool) Locality() agentflow.ToolLocality          { return age
 
 // --- task_list ---
 
-type taskListTool struct{ store *agentflow.TaskStore }
+type taskListTool struct{ store *task.Store }
 
 func (t *taskListTool) Name() string { return "task_list" }
 func (t *taskListTool) Description() string {
@@ -136,10 +137,10 @@ func (t *taskListTool) Execute(_ context.Context, input json.RawMessage, _ agent
 	tasks := t.store.List()
 
 	if p.Status != "" {
-		filtered := make([]*agentflow.Task, 0)
-		for _, task := range tasks {
-			if string(task.Status) == p.Status {
-				filtered = append(filtered, task)
+		filtered := make([]*task.Task, 0)
+		for _, tk := range tasks {
+			if string(tk.Status) == p.Status {
+				filtered = append(filtered, tk)
 			}
 		}
 		tasks = filtered
@@ -151,19 +152,19 @@ func (t *taskListTool) Execute(_ context.Context, input json.RawMessage, _ agent
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Tasks (%d total):\n\n", len(tasks)))
-	for _, task := range tasks {
+	for _, tk := range tasks {
 		marker := "[ ]"
-		switch task.Status {
-		case agentflow.TaskInProgress:
+		switch tk.Status {
+		case task.InProgress:
 			marker = "[~]"
-		case agentflow.TaskCompleted:
+		case task.Completed:
 			marker = "[x]"
-		case agentflow.TaskFailed:
+		case task.Failed:
 			marker = "[!]"
 		}
-		sb.WriteString(fmt.Sprintf("#%d %s %s", task.ID, marker, task.Title))
-		if task.Description != "" {
-			sb.WriteString(" — " + task.Description)
+		sb.WriteString(fmt.Sprintf("#%d %s %s", tk.ID, marker, tk.Title))
+		if tk.Description != "" {
+			sb.WriteString(" — " + tk.Description)
 		}
 		sb.WriteString("\n")
 	}
@@ -176,7 +177,7 @@ func (t *taskListTool) Locality() agentflow.ToolLocality          { return agent
 
 // --- task_get ---
 
-type taskGetTool struct{ store *agentflow.TaskStore }
+type taskGetTool struct{ store *task.Store }
 
 func (t *taskGetTool) Name() string { return "task_get" }
 func (t *taskGetTool) Description() string {

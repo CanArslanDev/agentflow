@@ -187,6 +187,12 @@ func (a *Agent) Resume(ctx context.Context, sessionID string, additionalMessage 
 	return a.RunSession(ctx, session, messages), nil
 }
 
+// AddHook appends a lifecycle hook to the agent. This is useful when hooks
+// need to be added after initial construction (e.g., by extension packages).
+func (a *Agent) AddHook(h Hook) {
+	a.hooks = append(a.hooks, h)
+}
+
 // Tools returns the registered tool names.
 func (a *Agent) Tools() []string {
 	names := make([]string, 0, len(a.tools))

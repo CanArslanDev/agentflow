@@ -1,9 +1,14 @@
-package agentflow
+// Package trigger provides scheduled agent execution. Triggers run on a fixed
+// interval and execute an agent with a predefined task, delivering results
+// through a callback.
+package trigger
 
 import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/CanArslanDev/agentflow"
 )
 
 // Trigger defines a scheduled agent execution. Triggers run on a fixed interval
@@ -19,19 +24,19 @@ type Trigger struct {
 	Task string
 
 	// Agent configuration for each run.
-	Provider     Provider
-	Tools        []Tool
+	Provider     agentflow.Provider
+	Tools        []agentflow.Tool
 	SystemPrompt string
 	MaxTurns     int
 	MaxTokens    int
 
 	// OnResult is called with the agent's text response after each execution.
 	// Runs in a separate goroutine — must be safe for concurrent use.
-	OnResult func(TriggerResult)
+	OnResult func(Result)
 }
 
-// TriggerResult holds the outcome of a single trigger execution.
-type TriggerResult struct {
+// Result holds the outcome of a single trigger execution.
+type Result struct {
 	TriggerID string
 	Timestamp time.Time
 	Response  string
@@ -39,8 +44,8 @@ type TriggerResult struct {
 	Duration  time.Duration
 }
 
-// TriggerScheduler manages multiple triggers running on intervals.
-type TriggerScheduler struct {
+// Scheduler manages multiple triggers running on intervals.
+type Scheduler struct {
 	mu       sync.Mutex
 	triggers map[string]*runningTrigger
 }
@@ -50,16 +55,16 @@ type runningTrigger struct {
 	cancel  context.CancelFunc
 }
 
-// NewTriggerScheduler creates an empty scheduler.
-func NewTriggerScheduler() *TriggerScheduler {
-	return &TriggerScheduler{
+// NewScheduler creates an empty scheduler.
+func NewScheduler() *Scheduler {
+	return &Scheduler{
 		triggers: make(map[string]*runningTrigger),
 	}
 }
 
 // Schedule registers and starts a trigger. If a trigger with the same ID
 // already exists, it is stopped and replaced.
-func (s *TriggerScheduler) Schedule(trigger Trigger) {
+func (s *Scheduler) Schedule(trigger Trigger) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -76,7 +81,7 @@ func (s *TriggerScheduler) Schedule(trigger Trigger) {
 }
 
 // Cancel stops a trigger by ID.
-func (s *TriggerScheduler) Cancel(id string) {
+func (s *Scheduler) Cancel(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -87,7 +92,7 @@ func (s *TriggerScheduler) Cancel(id string) {
 }
 
 // CancelAll stops all triggers.
-func (s *TriggerScheduler) CancelAll() {
+func (s *Scheduler) CancelAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -98,7 +103,7 @@ func (s *TriggerScheduler) CancelAll() {
 }
 
 // List returns all active trigger IDs.
-func (s *TriggerScheduler) List() []string {
+func (s *Scheduler) List() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -110,51 +115,51 @@ func (s *TriggerScheduler) List() []string {
 }
 
 // run executes the trigger on its interval until cancelled.
-func (s *TriggerScheduler) run(ctx context.Context, rt *runningTrigger) {
-	trigger := rt.trigger
-	ticker := time.NewTicker(trigger.Interval)
+func (s *Scheduler) run(ctx context.Context, rt *runningTrigger) {
+	trig := rt.trigger
+	ticker := time.NewTicker(trig.Interval)
 	defer ticker.Stop()
 
 	// Execute immediately on first run.
-	s.executeTrigger(ctx, trigger)
+	s.executeTrigger(ctx, trig)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.executeTrigger(ctx, trigger)
+			s.executeTrigger(ctx, trig)
 		}
 	}
 }
 
 // executeTrigger runs a single trigger execution.
-func (s *TriggerScheduler) executeTrigger(ctx context.Context, trigger Trigger) {
+func (s *Scheduler) executeTrigger(ctx context.Context, trig Trigger) {
 	start := time.Now()
 
-	maxTurns := trigger.MaxTurns
+	maxTurns := trig.MaxTurns
 	if maxTurns == 0 {
 		maxTurns = 5
 	}
-	maxTokens := trigger.MaxTokens
+	maxTokens := trig.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 1024
 	}
 
-	agent := NewAgent(trigger.Provider,
-		WithTools(trigger.Tools...),
-		WithSystemPrompt(trigger.SystemPrompt),
-		WithMaxTurns(maxTurns),
-		WithMaxTokens(maxTokens),
+	agent := agentflow.NewAgent(trig.Provider,
+		agentflow.WithTools(trig.Tools...),
+		agentflow.WithSystemPrompt(trig.SystemPrompt),
+		agentflow.WithMaxTurns(maxTurns),
+		agentflow.WithMaxTokens(maxTokens),
 	)
 
 	execCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	messages, err := agent.RunSync(execCtx, []Message{NewUserMessage(trigger.Task)})
+	messages, err := agent.RunSync(execCtx, []agentflow.Message{agentflow.NewUserMessage(trig.Task)})
 
-	result := TriggerResult{
-		TriggerID: trigger.ID,
+	result := Result{
+		TriggerID: trig.ID,
 		Timestamp: time.Now(),
 		Duration:  time.Since(start),
 		Error:     err,
@@ -162,14 +167,14 @@ func (s *TriggerScheduler) executeTrigger(ctx context.Context, trigger Trigger) 
 
 	if err == nil && len(messages) > 0 {
 		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role == RoleAssistant {
+			if messages[i].Role == agentflow.RoleAssistant {
 				result.Response = messages[i].TextContent()
 				break
 			}
 		}
 	}
 
-	if trigger.OnResult != nil {
-		trigger.OnResult(result)
+	if trig.OnResult != nil {
+		trig.OnResult(result)
 	}
 }

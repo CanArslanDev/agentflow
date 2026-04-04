@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/compactor"
 	"github.com/CanArslanDev/agentflow/provider/groq"
 	"github.com/CanArslanDev/agentflow/provider/mock"
 	"github.com/CanArslanDev/agentflow/tools"
@@ -16,7 +17,7 @@ import (
 // --- SlidingWindowCompactor tests ---
 
 func TestSlidingWindow_NoCompactionNeeded(t *testing.T) {
-	c := agentflow.NewSlidingWindowCompactor(10, 0) // trigger at 20
+	c := compactor.NewSlidingWindow(10, 0) // trigger at 20
 
 	messages := make([]agentflow.Message, 5)
 	for i := range messages {
@@ -29,7 +30,7 @@ func TestSlidingWindow_NoCompactionNeeded(t *testing.T) {
 }
 
 func TestSlidingWindow_CompactsWhenTriggered(t *testing.T) {
-	c := agentflow.NewSlidingWindowCompactor(4, 8) // keep last 4, trigger at 8
+	c := compactor.NewSlidingWindow(4, 8) // keep last 4, trigger at 8
 
 	messages := make([]agentflow.Message, 12)
 	messages[0] = agentflow.NewUserMessage("Initial task")
@@ -79,7 +80,7 @@ func TestSlidingWindow_CompactsWhenTriggered(t *testing.T) {
 }
 
 func TestSlidingWindow_PreservesFirstAndRecent(t *testing.T) {
-	c := agentflow.NewSlidingWindowCompactor(2, 5)
+	c := compactor.NewSlidingWindow(2, 5)
 
 	messages := []agentflow.Message{
 		agentflow.NewUserMessage("task"),           // 0 - preserved
@@ -115,9 +116,9 @@ func TestSlidingWindow_PreservesFirstAndRecent(t *testing.T) {
 // --- TokenWindowCompactor tests ---
 
 func TestTokenWindow_TriggersOnEstimate(t *testing.T) {
-	c := agentflow.NewTokenWindowCompactor(100, 4) // 100 tokens ≈ 400 chars
+	c := compactor.NewTokenWindow(100, 4) // 100 tokens = 400 chars
 
-	// Each message ~200 chars → ~50 tokens. 3 messages = ~150 tokens > 100.
+	// Each message ~200 chars -> ~50 tokens. 3 messages = ~150 tokens > 100.
 	messages := []agentflow.Message{
 		agentflow.NewUserMessage(string(make([]byte, 200))),
 		agentflow.NewAssistantMessage(string(make([]byte, 200))),
@@ -130,7 +131,7 @@ func TestTokenWindow_TriggersOnEstimate(t *testing.T) {
 }
 
 func TestTokenWindow_UsesRealUsage(t *testing.T) {
-	c := agentflow.NewTokenWindowCompactor(1000, 4)
+	c := compactor.NewTokenWindow(1000, 4)
 
 	messages := []agentflow.Message{agentflow.NewUserMessage("short")}
 	usage := &agentflow.Usage{PromptTokens: 1500}
@@ -162,11 +163,11 @@ func TestAgentWithSlidingWindow(t *testing.T) {
 
 	// Keep last 4 messages, trigger at 6. After 3 tool rounds (user+assistant+toolresult each),
 	// we'll have ~7+ messages which triggers compaction.
-	compactor := agentflow.NewSlidingWindowCompactor(4, 6)
+	c := compactor.NewSlidingWindow(4, 6)
 
 	agent := agentflow.NewAgent(provider,
 		agentflow.WithTools(echo),
-		agentflow.WithCompactor(compactor),
+		agentflow.WithCompactor(c),
 		agentflow.WithMaxTurns(10),
 	)
 
@@ -216,24 +217,24 @@ func TestIntegration_SummaryCompactor(t *testing.T) {
 		agentflow.NewAssistantMessage("Vegetarian options: Shojin ryori (Buddhist cuisine) in Kyoto temples, Ain Soph chain in Tokyo, and many curry houses in Osaka. Download the HappyCow app."),
 	}
 
-	compactor := agentflow.NewSummaryCompactor(provider, 4, 6)
+	c := compactor.NewSummary(provider, 4, 6)
 
-	if !compactor.ShouldCompact(messages, nil) {
+	if !c.ShouldCompact(messages, nil) {
 		t.Fatal("should trigger compaction for 10 messages")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	compacted, err := compactor.Compact(ctx, messages)
+	compacted, err := c.Compact(ctx, messages)
 	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 
-	t.Logf("Original: %d messages → Compacted: %d messages", len(messages), len(compacted))
+	t.Logf("Original: %d messages -> Compacted: %d messages", len(messages), len(compacted))
 
 	if len(compacted) >= len(messages) {
-		t.Errorf("compaction didn't reduce: %d → %d", len(messages), len(compacted))
+		t.Errorf("compaction didn't reduce: %d -> %d", len(messages), len(compacted))
 	}
 
 	// First message preserved.

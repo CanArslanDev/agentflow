@@ -1,25 +1,30 @@
-package agentflow
+package compactor
 
-import "context"
+import (
+	"context"
+	"fmt"
+
+	"github.com/CanArslanDev/agentflow"
+)
 
 // StagedCompactor applies multiple compaction strategies in sequence.
 // First tries a lightweight strategy; if the result is still too large,
 // falls through to heavier strategies.
 //
-//	compactor := agentflow.NewStagedCompactor(
-//	    agentflow.NewSlidingWindowCompactor(30, 40),  // Stage 1: keep 30
-//	    agentflow.NewSlidingWindowCompactor(15, 20),  // Stage 2: keep 15
-//	    agentflow.NewSummaryCompactor(provider, 10, 0), // Stage 3: summarize
+//	c := compactor.NewStaged(
+//	    compactor.NewSlidingWindow(30, 40),      // Stage 1: keep 30
+//	    compactor.NewSlidingWindow(15, 20),      // Stage 2: keep 15
+//	    compactor.NewSummary(provider, 10, 0),   // Stage 3: summarize
 //	)
 type StagedCompactor struct {
-	stages       []Compactor
+	stages       []agentflow.Compactor
 	tokenPerChar int // Estimated chars per token for size checking. Default: 4.
 	targetTokens int // Target token count after compaction. Default: 4000.
 }
 
-// NewStagedCompactor creates a compactor that tries each stage in order.
+// NewStaged creates a compactor that tries each stage in order.
 // Stages should be ordered from lightest (fastest) to heaviest (most aggressive).
-func NewStagedCompactor(stages ...Compactor) *StagedCompactor {
+func NewStaged(stages ...agentflow.Compactor) *StagedCompactor {
 	return &StagedCompactor{
 		stages:       stages,
 		tokenPerChar: 4,
@@ -34,7 +39,7 @@ func (c *StagedCompactor) WithTarget(tokens int) *StagedCompactor {
 }
 
 // ShouldCompact returns true if any stage thinks compaction is needed.
-func (c *StagedCompactor) ShouldCompact(messages []Message, usage *Usage) bool {
+func (c *StagedCompactor) ShouldCompact(messages []agentflow.Message, usage *agentflow.Usage) bool {
 	for _, stage := range c.stages {
 		if stage.ShouldCompact(messages, usage) {
 			return true
@@ -45,7 +50,7 @@ func (c *StagedCompactor) ShouldCompact(messages []Message, usage *Usage) bool {
 
 // Compact tries each stage in order. After each stage, checks if the result
 // is small enough. Stops at the first stage that brings messages under target.
-func (c *StagedCompactor) Compact(ctx context.Context, messages []Message) ([]Message, error) {
+func (c *StagedCompactor) Compact(ctx context.Context, messages []agentflow.Message) ([]agentflow.Message, error) {
 	current := messages
 
 	for _, stage := range c.stages {
@@ -70,20 +75,8 @@ func (c *StagedCompactor) Compact(ctx context.Context, messages []Message) ([]Me
 }
 
 // estimateTokens gives a rough token count from message content lengths.
-func (c *StagedCompactor) estimateTokens(messages []Message) int {
-	totalChars := 0
-	for _, msg := range messages {
-		for _, block := range msg.Content {
-			switch block.Type {
-			case ContentText:
-				totalChars += len(block.Text)
-			case ContentToolResult:
-				if block.ToolResult != nil {
-					totalChars += len(block.ToolResult.Content)
-				}
-			}
-		}
-	}
+func (c *StagedCompactor) estimateTokens(messages []agentflow.Message) int {
+	totalChars := estimateChars(messages)
 	cpt := c.tokenPerChar
 	if cpt <= 0 {
 		cpt = 4
@@ -108,11 +101,11 @@ func NewContextCollapser(triggerAt int) *ContextCollapser {
 }
 
 // ShouldCompact counts tool-result pairs in the conversation.
-func (c *ContextCollapser) ShouldCompact(messages []Message, _ *Usage) bool {
+func (c *ContextCollapser) ShouldCompact(messages []agentflow.Message, _ *agentflow.Usage) bool {
 	pairs := 0
 	for _, msg := range messages {
 		for _, block := range msg.Content {
-			if block.Type == ContentToolResult {
+			if block.Type == agentflow.ContentToolResult {
 				pairs++
 			}
 		}
@@ -122,24 +115,23 @@ func (c *ContextCollapser) ShouldCompact(messages []Message, _ *Usage) bool {
 
 // Compact collapses consecutive assistant(tool_call) + user(tool_result) pairs
 // into a single system message summarizing what happened.
-func (c *ContextCollapser) Compact(_ context.Context, messages []Message) ([]Message, error) {
+func (c *ContextCollapser) Compact(_ context.Context, messages []agentflow.Message) ([]agentflow.Message, error) {
 	if len(messages) < 4 {
 		return messages, nil
 	}
 
-	var result []Message
+	var result []agentflow.Message
 	// Always keep the first message.
 	result = append(result, messages[0])
 
 	i := 1
-	var collapsed int
 	for i < len(messages) {
 		msg := messages[i]
 
 		// Check if this is an assistant message with tool calls followed by tool results.
-		if msg.Role == RoleAssistant && len(msg.ToolCalls()) > 0 && i+1 < len(messages) {
+		if msg.Role == agentflow.RoleAssistant && len(msg.ToolCalls()) > 0 && i+1 < len(messages) {
 			nextMsg := messages[i+1]
-			if nextMsg.Role == RoleUser && len(nextMsg.ToolResults()) > 0 {
+			if nextMsg.Role == agentflow.RoleUser && len(nextMsg.ToolResults()) > 0 {
 				// Collapse this pair into a summary.
 				calls := msg.ToolCalls()
 				results := nextMsg.ToolResults()
@@ -157,15 +149,14 @@ func (c *ContextCollapser) Compact(_ context.Context, messages []Message) ([]Mes
 					summary += "\n"
 				}
 
-				result = append(result, Message{
-					Role: RoleSystem,
-					Content: []ContentBlock{{
-						Type: ContentText,
-						Text: "[Collapsed tool execution]\n" + summary,
+				result = append(result, agentflow.Message{
+					Role: agentflow.RoleSystem,
+					Content: []agentflow.ContentBlock{{
+						Type: agentflow.ContentText,
+						Text: fmt.Sprintf("[Collapsed tool execution]\n%s", summary),
 					}},
 				})
 
-				collapsed++
 				i += 2
 				continue
 			}

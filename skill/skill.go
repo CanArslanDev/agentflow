@@ -1,16 +1,18 @@
-package agentflow
+// Package skill provides reusable workflow templates that agents can invoke
+// by name. Skills define a system prompt and instructions that guide the agent
+// through a specific task pattern (summarize, translate, analyze, etc.).
+package skill
 
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
+
+	"github.com/CanArslanDev/agentflow"
 )
 
 // Skill is a reusable workflow template that an agent can invoke by name.
-// Skills define a system prompt and instructions that guide the agent through
-// a specific task pattern (summarize, translate, analyze, etc.).
 type Skill struct {
 	// Name is the unique identifier used to invoke the skill.
 	Name string `json:"name"`
@@ -28,35 +30,35 @@ type Skill struct {
 	MaxTokens int `json:"max_tokens,omitempty"`
 }
 
-// SkillRegistry manages available skills. Thread-safe for concurrent access.
-type SkillRegistry struct {
+// Registry manages available skills. Thread-safe for concurrent access.
+type Registry struct {
 	mu     sync.RWMutex
 	skills map[string]*Skill
 }
 
-// NewSkillRegistry creates an empty registry.
-func NewSkillRegistry() *SkillRegistry {
-	return &SkillRegistry{
+// NewRegistry creates an empty registry.
+func NewRegistry() *Registry {
+	return &Registry{
 		skills: make(map[string]*Skill),
 	}
 }
 
 // Register adds a skill to the registry. Overwrites if name already exists.
-func (r *SkillRegistry) Register(skill *Skill) {
+func (r *Registry) Register(skill *Skill) {
 	r.mu.Lock()
 	r.skills[skill.Name] = skill
 	r.mu.Unlock()
 }
 
 // Get returns a skill by name. Returns nil if not found.
-func (r *SkillRegistry) Get(name string) *Skill {
+func (r *Registry) Get(name string) *Skill {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.skills[name]
 }
 
 // List returns all registered skill names and descriptions.
-func (r *SkillRegistry) List() []Skill {
+func (r *Registry) List() []Skill {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -67,38 +69,38 @@ func (r *SkillRegistry) List() []Skill {
 	return result
 }
 
-// ExecuteSkill runs a skill as a sub-agent call. The skill's system prompt
+// Execute runs a skill as a sub-agent call. The skill's system prompt
 // overrides the parent agent's prompt. Returns the skill's text response.
-func ExecuteSkill(ctx context.Context, provider Provider, skill *Skill, input string) (string, error) {
-	maxTurns := skill.MaxTurns
+func Execute(ctx context.Context, provider agentflow.Provider, s *Skill, input string) (string, error) {
+	maxTurns := s.MaxTurns
 	if maxTurns <= 0 {
 		maxTurns = 3
 	}
-	maxTokens := skill.MaxTokens
+	maxTokens := s.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = 1024
 	}
 
-	agent := NewAgent(provider,
-		WithSystemPrompt(skill.SystemPrompt),
-		WithMaxTurns(maxTurns),
-		WithMaxTokens(maxTokens),
+	agent := agentflow.NewAgent(provider,
+		agentflow.WithSystemPrompt(s.SystemPrompt),
+		agentflow.WithMaxTurns(maxTurns),
+		agentflow.WithMaxTokens(maxTokens),
 	)
 
 	var result strings.Builder
-	for ev := range agent.Run(ctx, []Message{NewUserMessage(input)}) {
-		if ev.Type == EventTextDelta && ev.TextDelta != nil {
+	for ev := range agent.Run(ctx, []agentflow.Message{agentflow.NewUserMessage(input)}) {
+		if ev.Type == agentflow.EventTextDelta && ev.TextDelta != nil {
 			result.WriteString(ev.TextDelta.Text)
 		}
 	}
 
 	if result.Len() == 0 {
-		return "", fmt.Errorf("skill %q produced no output", skill.Name)
+		return "", fmt.Errorf("skill %q produced no output", s.Name)
 	}
 	return result.String(), nil
 }
 
-// ParseSkill parses a skill definition from a simple text format:
+// Parse parses a skill definition from a simple text format:
 //
 //	---
 //	name: summarize
@@ -107,7 +109,7 @@ func ExecuteSkill(ctx context.Context, provider Provider, skill *Skill, input st
 //	max_tokens: 500
 //	---
 //	You are a summarization expert. Provide clear, concise summaries.
-func ParseSkill(content string) (*Skill, error) {
+func Parse(content string) (*Skill, error) {
 	content = strings.TrimSpace(content)
 	if !strings.HasPrefix(content, "---") {
 		return nil, fmt.Errorf("skill must start with --- frontmatter delimiter")
@@ -122,7 +124,7 @@ func ParseSkill(content string) (*Skill, error) {
 	frontmatter := strings.TrimSpace(parts[0])
 	body := strings.TrimSpace(parts[1])
 
-	skill := &Skill{
+	s := &Skill{
 		SystemPrompt: body,
 	}
 
@@ -141,25 +143,22 @@ func ParseSkill(content string) (*Skill, error) {
 
 		switch key {
 		case "name":
-			skill.Name = val
+			s.Name = val
 		case "description":
-			skill.Description = val
+			s.Description = val
 		case "max_turns":
-			fmt.Sscanf(val, "%d", &skill.MaxTurns)
+			fmt.Sscanf(val, "%d", &s.MaxTurns)
 		case "max_tokens":
-			fmt.Sscanf(val, "%d", &skill.MaxTokens)
+			fmt.Sscanf(val, "%d", &s.MaxTokens)
 		}
 	}
 
-	if skill.Name == "" {
+	if s.Name == "" {
 		return nil, fmt.Errorf("skill name is required in frontmatter")
 	}
-	if skill.SystemPrompt == "" {
+	if s.SystemPrompt == "" {
 		return nil, fmt.Errorf("skill system prompt (body) is required")
 	}
 
-	return skill, nil
+	return s, nil
 }
-
-// Ensure Stream implements io.EOF convention.
-var _ error = io.EOF

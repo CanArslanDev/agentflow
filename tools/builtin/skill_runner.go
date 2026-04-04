@@ -7,12 +7,13 @@ import (
 	"strings"
 
 	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/skill"
 )
 
 // SkillTools returns tools for discovering and executing skills from a registry.
 //
-//	registry := agentflow.NewSkillRegistry()
-//	registry.Register(&agentflow.Skill{
+//	registry := skill.NewRegistry()
+//	registry.Register(&skill.Skill{
 //	    Name:         "summarize",
 //	    Description:  "Summarize text concisely",
 //	    SystemPrompt: "You are a summarization expert.",
@@ -20,7 +21,7 @@ import (
 //	agent := agentflow.NewAgent(provider,
 //	    agentflow.WithTools(builtin.SkillTools(registry, provider)...),
 //	)
-func SkillTools(registry *agentflow.SkillRegistry, provider agentflow.Provider) []agentflow.Tool {
+func SkillTools(registry *skill.Registry, provider agentflow.Provider) []agentflow.Tool {
 	return []agentflow.Tool{
 		&runSkillTool{registry: registry, provider: provider},
 		&listSkillsTool{registry: registry},
@@ -30,7 +31,7 @@ func SkillTools(registry *agentflow.SkillRegistry, provider agentflow.Provider) 
 // --- run_skill ---
 
 type runSkillTool struct {
-	registry *agentflow.SkillRegistry
+	registry *skill.Registry
 	provider agentflow.Provider
 }
 
@@ -57,8 +58,8 @@ func (t *runSkillTool) Execute(ctx context.Context, input json.RawMessage, progr
 		return &agentflow.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
 	}
 
-	skill := t.registry.Get(p.SkillName)
-	if skill == nil {
+	sk := t.registry.Get(p.SkillName)
+	if sk == nil {
 		available := t.registry.List()
 		names := make([]string, len(available))
 		for i, s := range available {
@@ -71,17 +72,17 @@ func (t *runSkillTool) Execute(ctx context.Context, input json.RawMessage, progr
 	}
 
 	if progress != nil {
-		progress(agentflow.ProgressEvent{Message: "Running skill: " + skill.Name})
+		progress(agentflow.ProgressEvent{Message: "Running skill: " + sk.Name})
 	}
 
-	result, err := agentflow.ExecuteSkill(ctx, t.provider, skill, p.Input)
+	result, err := skill.Execute(ctx, t.provider, sk, p.Input)
 	if err != nil {
 		return &agentflow.ToolResult{Content: "skill failed: " + err.Error(), IsError: true}, nil
 	}
 
 	return &agentflow.ToolResult{
 		Content:  result,
-		Metadata: map[string]any{"skill": skill.Name},
+		Metadata: map[string]any{"skill": sk.Name},
 	}, nil
 }
 func (t *runSkillTool) IsConcurrencySafe(_ json.RawMessage) bool { return true }
@@ -91,7 +92,7 @@ func (t *runSkillTool) Locality() agentflow.ToolLocality          { return agent
 // --- list_skills ---
 
 type listSkillsTool struct {
-	registry *agentflow.SkillRegistry
+	registry *skill.Registry
 }
 
 func (t *listSkillsTool) Name() string { return "list_skills" }

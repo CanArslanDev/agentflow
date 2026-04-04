@@ -10,6 +10,8 @@ import (
 
 	"github.com/CanArslanDev/agentflow"
 	"github.com/CanArslanDev/agentflow/provider/groq"
+	"github.com/CanArslanDev/agentflow/skill"
+	"github.com/CanArslanDev/agentflow/task"
 	"github.com/CanArslanDev/agentflow/tools"
 	"github.com/CanArslanDev/agentflow/tools/builtin"
 )
@@ -144,7 +146,7 @@ func TestIntegration_Tier1_StreamingExec_SingleTool(t *testing.T) {
 // TestIntegration_Tier1_TaskCreate — agent kendi basina task olusturur.
 func TestIntegration_Tier1_TaskCreate(t *testing.T) {
 	provider := groqProvider(t)
-	store := agentflow.NewTaskStore()
+	store := task.NewStore()
 
 	agent := agentflow.NewAgent(provider,
 		agentflow.WithTools(builtin.TaskTools(store)...),
@@ -191,7 +193,7 @@ func TestIntegration_Tier1_TaskCreate(t *testing.T) {
 // TestIntegration_Tier1_TaskUpdateAndList — agent task olustur, listele, guncelle.
 func TestIntegration_Tier1_TaskUpdateAndList(t *testing.T) {
 	provider := groqProvider(t)
-	store := agentflow.NewTaskStore()
+	store := task.NewStore()
 
 	// Pre-create some tasks.
 	store.Create("Book flight tickets", "Find cheapest flights to Istanbul")
@@ -245,7 +247,7 @@ func TestIntegration_Tier1_TaskUpdateAndList(t *testing.T) {
 	task1 := store.Get(1)
 	if task1 != nil {
 		t.Logf("Task 1 status: %s", task1.Status)
-		if task1.Status != agentflow.TaskCompleted {
+		if task1.Status != task.Completed {
 			t.Logf("Note: task 1 status is %s (model may have used different approach)", task1.Status)
 		}
 	}
@@ -258,9 +260,9 @@ func TestIntegration_Tier1_TaskUpdateAndList(t *testing.T) {
 // TestIntegration_Tier1_SkillSummarize — agent summarize skill'ini calistirir.
 func TestIntegration_Tier1_SkillSummarize(t *testing.T) {
 	provider := groqProvider(t)
-	registry := agentflow.NewSkillRegistry()
+	registry := skill.NewRegistry()
 
-	registry.Register(&agentflow.Skill{
+	registry.Register(&skill.Skill{
 		Name:         "summarize",
 		Description:  "Summarize text into a concise paragraph",
 		SystemPrompt: "You are a summarization expert. Provide a concise summary in 2-3 sentences maximum. Be direct and factual.",
@@ -315,16 +317,16 @@ March 2012. It is used extensively at Google and in many open-source projects.`
 // TestIntegration_Tier1_SkillTranslate — agent translate skill'ini calistirir.
 func TestIntegration_Tier1_SkillTranslate(t *testing.T) {
 	provider := groqProvider(t)
-	registry := agentflow.NewSkillRegistry()
+	registry := skill.NewRegistry()
 
-	registry.Register(&agentflow.Skill{
+	registry.Register(&skill.Skill{
 		Name:         "translate",
 		Description:  "Translate text to a target language",
 		SystemPrompt: "You are a translator. Translate the given text accurately. Only output the translation, nothing else.",
 		MaxTurns:     1,
 		MaxTokens:    300,
 	})
-	registry.Register(&agentflow.Skill{
+	registry.Register(&skill.Skill{
 		Name:         "summarize",
 		Description:  "Summarize text concisely",
 		SystemPrompt: "Summarize in 1-2 sentences.",
@@ -376,9 +378,9 @@ func TestIntegration_Tier1_SkillTranslate(t *testing.T) {
 // TestIntegration_Tier1_SkillListAndRun — agent once list eder, sonra calistirir.
 func TestIntegration_Tier1_SkillListAndRun(t *testing.T) {
 	provider := groqProvider(t)
-	registry := agentflow.NewSkillRegistry()
+	registry := skill.NewRegistry()
 
-	registry.Register(&agentflow.Skill{
+	registry.Register(&skill.Skill{
 		Name:         "count_words",
 		Description:  "Count the number of words in text",
 		SystemPrompt: "Count the words in the given text. Reply with only the number.",

@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/plan"
+	"github.com/CanArslanDev/agentflow/team"
+	"github.com/CanArslanDev/agentflow/trigger"
 )
 
 // ==========================================================================
@@ -17,7 +20,7 @@ import (
 func TestIntegration_Tier2_TeamRunAll(t *testing.T) {
 	provider := groqProvider(t)
 
-	team := agentflow.NewTeam(provider, []agentflow.TeamMember{
+	tm := team.New(provider, []team.Member{
 		{
 			Role:         "researcher",
 			SystemPrompt: "You are a research specialist. Give concise factual answers in 1-2 sentences.",
@@ -35,7 +38,7 @@ func TestIntegration_Tier2_TeamRunAll(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	results := team.RunAll(ctx, map[string]string{
+	results := tm.RunAll(ctx, map[string]string{
 		"researcher": "What is the capital of Turkey?",
 		"writer":     "Write a one-sentence poem about Istanbul.",
 	})
@@ -60,7 +63,7 @@ func TestIntegration_Tier2_TeamRunAll(t *testing.T) {
 func TestIntegration_Tier2_TeamSharedMemory(t *testing.T) {
 	provider := groqProvider(t)
 
-	team := agentflow.NewTeam(provider, []agentflow.TeamMember{
+	tm := team.New(provider, []team.Member{
 		{
 			Role:         "analyst",
 			SystemPrompt: "You are a data analyst. Store your findings in shared memory using set_shared_memory tool. Key should be 'finding', value should be your analysis.",
@@ -72,7 +75,7 @@ func TestIntegration_Tier2_TeamSharedMemory(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	events, err := team.RunMember(ctx, "analyst", "Analyze this: Go was created in 2009 at Google. Store the creation year in shared memory with key 'go_year'.")
+	events, err := tm.RunMember(ctx, "analyst", "Analyze this: Go was created in 2009 at Google. Store the creation year in shared memory with key 'go_year'.")
 	if err != nil {
 		t.Fatalf("RunMember error: %v", err)
 	}
@@ -111,7 +114,7 @@ func TestIntegration_Tier2_PlanOnly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result, err := agentflow.Plan(ctx, provider, "Build a simple REST API in Go with user authentication")
+	result, err := plan.Plan(ctx, provider, "Build a simple REST API in Go with user authentication")
 	if err != nil {
 		t.Fatalf("Plan error: %v", err)
 	}
@@ -137,7 +140,7 @@ func TestIntegration_Tier2_PlanAndExecute(t *testing.T) {
 
 	var planText, execText string
 	var planPhase bool = true
-	for ev := range agentflow.PlanAndExecute(ctx, provider,
+	for ev := range plan.PlanAndExecute(ctx, provider,
 		"List 3 interesting facts about Go programming language",
 		nil, // no tools needed
 		agentflow.WithMaxTurns(1),
@@ -189,7 +192,7 @@ func TestIntegration_Tier2_MemoryExtraction(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	memories, err := agentflow.ExtractMemories(ctx, provider, messages)
+	memories, err := plan.ExtractMemories(ctx, provider, messages)
 	if err != nil {
 		t.Fatalf("ExtractMemories error: %v", err)
 	}
@@ -233,11 +236,11 @@ func TestIntegration_Tier2_MemoryExtraction(t *testing.T) {
 func TestIntegration_Tier2_TriggerExecution(t *testing.T) {
 	provider := groqProvider(t)
 
-	var result agentflow.TriggerResult
+	var result trigger.Result
 	done := make(chan struct{})
 
-	scheduler := agentflow.NewTriggerScheduler()
-	scheduler.Schedule(agentflow.Trigger{
+	scheduler := trigger.NewScheduler()
+	scheduler.Schedule(trigger.Trigger{
 		ID:           "test-trigger",
 		Interval:     1 * time.Hour, // Won't tick again in test.
 		Task:         "Say 'trigger fired' in exactly 2 words.",
@@ -245,7 +248,7 @@ func TestIntegration_Tier2_TriggerExecution(t *testing.T) {
 		SystemPrompt: "You are a minimal responder. Reply in exactly the words requested.",
 		MaxTurns:     1,
 		MaxTokens:    50,
-		OnResult: func(r agentflow.TriggerResult) {
+		OnResult: func(r trigger.Result) {
 			result = r
 			close(done)
 		},

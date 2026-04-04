@@ -427,19 +427,21 @@ Error results are never truncated -- the model needs full error context.
 Manage growing conversation history for long-running agents:
 
 ```go
+import "github.com/CanArslanDev/agentflow/compactor"
+
 // Simple: keep last N messages, discard older ones
 agent := agentflow.NewAgent(provider,
-    agentflow.WithCompactor(agentflow.NewSlidingWindowCompactor(20, 0)),
+    agentflow.WithCompactor(compactor.NewSlidingWindow(20, 0)),
 )
 
 // Token-aware: trigger compaction based on estimated token count
 agent := agentflow.NewAgent(provider,
-    agentflow.WithCompactor(agentflow.NewTokenWindowCompactor(8000, 20)),
+    agentflow.WithCompactor(compactor.NewTokenWindow(8000, 20)),
 )
 
 // AI-powered: summarize older messages using a provider
 agent := agentflow.NewAgent(provider,
-    agentflow.WithCompactor(agentflow.NewSummaryCompactor(provider, 20, 0)),
+    agentflow.WithCompactor(compactor.NewSummary(provider, 20, 0)),
 )
 ```
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/CanArslanDev/agentflow"
+	"github.com/CanArslanDev/agentflow/observability"
 	"github.com/CanArslanDev/agentflow/provider/mock"
 	"github.com/CanArslanDev/agentflow/tools"
 )
@@ -19,7 +20,7 @@ import (
 func TestIntegration_Tier3_Tracer(t *testing.T) {
 	provider := groqProvider(t)
 
-	tracer := agentflow.NewTracer()
+	tracer := observability.NewTracer()
 
 	calc := tools.New("calc", "Calculate math").
 		WithSchema(map[string]any{
@@ -36,13 +37,6 @@ func TestIntegration_Tier3_Tracer(t *testing.T) {
 		}).Build()
 
 	agent := agentflow.NewAgent(provider,
-		agentflow.WithTools(calc),
-		agentflow.WithSystemPrompt("Use calc tool for math."),
-		agentflow.WithMaxTurns(3),
-		agentflow.WithMaxTokens(300),
-	)
-	// Rebuild with tracer hooks.
-	agent = agentflow.NewAgent(provider,
 		agentflow.WithTools(calc),
 		agentflow.WithSystemPrompt("Use calc tool for math."),
 		agentflow.WithMaxTurns(3),
@@ -86,7 +80,7 @@ func TestIntegration_Tier3_Tracer(t *testing.T) {
 func TestIntegration_Tier3_CostTracker(t *testing.T) {
 	provider := groqProvider(t)
 
-	tracker := agentflow.NewCostTracker()
+	tracker := observability.NewCostTracker()
 
 	agent := agentflow.NewAgent(provider,
 		agentflow.WithSystemPrompt("Reply in one sentence."),
@@ -129,7 +123,7 @@ func TestIntegration_Tier3_CostTracker(t *testing.T) {
 
 // TestIntegration_Tier3_CostTrackerWithModel — model-specific pricing.
 func TestIntegration_Tier3_CostTrackerWithModel(t *testing.T) {
-	tracker := agentflow.NewCostTracker()
+	tracker := observability.NewCostTracker()
 
 	// Simulate usage for a known model.
 	tracker.TrackUsage("llama-3.3-70b-versatile", 1000, 500)
@@ -163,7 +157,7 @@ func TestIntegration_Tier3_TracerWithToolCalls(t *testing.T) {
 		),
 	)
 
-	tracer := agentflow.NewTracer()
+	tracer := observability.NewTracer()
 
 	testTool := tools.New("test_tool", "Test").
 		WithSchema(map[string]any{"type": "object"}).
@@ -196,10 +190,10 @@ func TestIntegration_Tier3_TracerWithToolCalls(t *testing.T) {
 	var hasModelSpan, hasToolSpan bool
 	for _, span := range trace.Spans {
 		t.Logf("Span: %s (%s) — %v", span.Name, span.Kind, span.Duration)
-		if span.Kind == agentflow.SpanKindModelCall {
+		if span.Kind == observability.SpanKindModelCall {
 			hasModelSpan = true
 		}
-		if span.Kind == agentflow.SpanKindToolExecution {
+		if span.Kind == observability.SpanKindToolExecution {
 			hasToolSpan = true
 			if span.Duration < 20*time.Millisecond {
 				t.Errorf("tool span too short: %v (expected ~25ms)", span.Duration)
@@ -219,8 +213,8 @@ func TestIntegration_Tier3_TracerWithToolCalls(t *testing.T) {
 func TestIntegration_Tier3_CostAndTracer(t *testing.T) {
 	provider := groqProvider(t)
 
-	tracer := agentflow.NewTracer()
-	tracker := agentflow.NewCostTracker()
+	tracer := observability.NewTracer()
+	tracker := observability.NewCostTracker()
 
 	agent := agentflow.NewAgent(provider,
 		agentflow.WithSystemPrompt("Reply briefly."),

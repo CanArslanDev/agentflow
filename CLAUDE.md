@@ -184,14 +184,22 @@ agentflow/
     budget.go                # TokenBudget, budgetTracker
     result.go                # ResultLimiter, TruncateLimiter, HeadTailLimiter, NoLimiter
     compactor.go             # Compactor interface
-    compactor_sliding.go     # SlidingWindowCompactor, TokenWindowCompactor
-    compactor_summary.go     # SummaryCompactor (AI-powered)
+    streaming_executor.go    # Streaming tool executor (overlaps model gen with tool exec)
     errors.go                # Sentinel errors, ProviderError, ToolError
     doc.go                   # Package-level documentation
 
+    -- Extension packages --
+    compactor/               # Compactor implementations (sliding, token, summary, staged)
+    team/                    # Multi-agent team coordination, mailbox, shared memory
+    observability/           # Tracer (spans) and CostTracker (token pricing)
+    trigger/                 # Scheduled agent execution on intervals
+    plan/                    # Plan mode, PlanAndExecute, memory extraction
+    skill/                   # Skill registry, execution, and parsing
+    task/                    # Task store for agent work tracking
+
     -- Providers --
     provider/openai/         # OpenAI Chat Completions (uses internal/sse)
-    provider/anthropic/      # Anthropic Messages API (custom SSE parser — different format)
+    provider/anthropic/      # Anthropic Messages API (custom SSE parser -- different format)
     provider/gemini/         # Google Gemini generateContent (custom SSE parser)
     provider/groq/           # Groq API (uses internal/sse, OpenAI-compatible)
     provider/openrouter/     # OpenRouter API (uses internal/sse, OpenAI-compatible)

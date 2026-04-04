@@ -1,16 +1,19 @@
-package agentflow
+// Package team provides multi-agent coordination with shared communication
+// channels and memory. Team members run as independent agents that can
+// exchange messages through a mailbox and share state through shared memory.
+package team
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/CanArslanDev/agentflow"
 )
 
-// --- Team/Swarm Coordination ---
-
-// TeamMember is an agent within a team, identified by a role name.
-type TeamMember struct {
+// Member is an agent within a team, identified by a role name.
+type Member struct {
 	// Role is the unique identifier for this member (e.g., "researcher", "writer").
 	Role string
 
@@ -18,7 +21,7 @@ type TeamMember struct {
 	SystemPrompt string
 
 	// Tools available to this member. nil inherits from the team's shared tools.
-	Tools []Tool
+	Tools []agentflow.Tool
 
 	// MaxTurns for this member's individual runs.
 	MaxTurns int
@@ -80,17 +83,6 @@ func (m *Mailbox) HasMessages(role string) bool {
 	return len(m.messages[role]) > 0
 }
 
-// Team coordinates multiple agents working together on a shared goal.
-// Members can communicate via a shared mailbox and access shared memory.
-type Team struct {
-	provider     Provider
-	members      map[string]*TeamMember
-	mailbox      *Mailbox
-	sharedMemory *SharedMemory
-	hooks        []Hook
-	permission   PermissionChecker
-}
-
 // SharedMemory is a thread-safe key-value store accessible to all team members.
 type SharedMemory struct {
 	mu   sync.RWMutex
@@ -140,14 +132,25 @@ func (m *SharedMemory) Summary() string {
 	return result
 }
 
-// NewTeam creates a team with the given provider and members.
-func NewTeam(provider Provider, members []TeamMember, opts ...TeamOption) *Team {
+// Team coordinates multiple agents working together on a shared goal.
+// Members can communicate via a shared mailbox and access shared memory.
+type Team struct {
+	provider     agentflow.Provider
+	members      map[string]*Member
+	mailbox      *Mailbox
+	sharedMemory *SharedMemory
+	hooks        []agentflow.Hook
+	permission   agentflow.PermissionChecker
+}
+
+// New creates a team with the given provider and members.
+func New(provider agentflow.Provider, members []Member, opts ...Option) *Team {
 	t := &Team{
 		provider:     provider,
-		members:      make(map[string]*TeamMember, len(members)),
+		members:      make(map[string]*Member, len(members)),
 		mailbox:      NewMailbox(),
 		sharedMemory: NewSharedMemory(),
-		permission:   AllowAll(),
+		permission:   agentflow.AllowAll(),
 	}
 	for i := range members {
 		t.members[members[i].Role] = &members[i]
@@ -158,22 +161,22 @@ func NewTeam(provider Provider, members []TeamMember, opts ...TeamOption) *Team 
 	return t
 }
 
-// TeamOption configures a Team.
-type TeamOption func(*Team)
+// Option configures a Team.
+type Option func(*Team)
 
-// WithTeamHooks sets hooks shared by all team members.
-func WithTeamHooks(hooks ...Hook) TeamOption {
+// WithHooks sets hooks shared by all team members.
+func WithHooks(hooks ...agentflow.Hook) Option {
 	return func(t *Team) { t.hooks = hooks }
 }
 
-// WithTeamPermission sets the permission checker for all members.
-func WithTeamPermission(p PermissionChecker) TeamOption {
+// WithPermission sets the permission checker for all members.
+func WithPermission(p agentflow.PermissionChecker) Option {
 	return func(t *Team) { t.permission = p }
 }
 
 // RunMember executes a single team member's agent with access to the mailbox
 // and shared memory. Returns the event channel.
-func (t *Team) RunMember(ctx context.Context, role string, task string) (<-chan Event, error) {
+func (t *Team) RunMember(ctx context.Context, role string, task string) (<-chan agentflow.Event, error) {
 	member, ok := t.members[role]
 	if !ok {
 		return nil, fmt.Errorf("team member %q not found", role)
@@ -208,7 +211,7 @@ func (t *Team) RunMember(ctx context.Context, role string, task string) (<-chan 
 		maxTokens = 1024
 	}
 
-	var tools []Tool
+	var tools []agentflow.Tool
 	if member.Tools != nil {
 		tools = member.Tools
 	}
@@ -221,24 +224,24 @@ func (t *Team) RunMember(ctx context.Context, role string, task string) (<-chan 
 		&getMemoryTool{memory: t.sharedMemory},
 	)
 
-	agent := NewAgent(t.provider,
-		WithTools(tools...),
-		WithSystemPrompt(prompt),
-		WithMaxTurns(maxTurns),
-		WithMaxTokens(maxTokens),
-		WithPermission(t.permission),
+	agent := agentflow.NewAgent(t.provider,
+		agentflow.WithTools(tools...),
+		agentflow.WithSystemPrompt(prompt),
+		agentflow.WithMaxTurns(maxTurns),
+		agentflow.WithMaxTokens(maxTokens),
+		agentflow.WithPermission(t.permission),
 	)
 	for _, h := range t.hooks {
-		agent.hooks = append(agent.hooks, h)
+		agent.AddHook(h)
 	}
 
-	return agent.Run(ctx, []Message{NewUserMessage(task)}), nil
+	return agent.Run(ctx, []agentflow.Message{agentflow.NewUserMessage(task)}), nil
 }
 
 // RunAll executes all team members in parallel with their individual tasks.
 // Returns a map of role -> final text response.
-func (t *Team) RunAll(ctx context.Context, tasks map[string]string) map[string]TeamResult {
-	results := make(map[string]TeamResult, len(tasks))
+func (t *Team) RunAll(ctx context.Context, tasks map[string]string) map[string]Result {
+	results := make(map[string]Result, len(tasks))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
@@ -250,20 +253,20 @@ func (t *Team) RunAll(ctx context.Context, tasks map[string]string) map[string]T
 			events, err := t.RunMember(ctx, r, tsk)
 			if err != nil {
 				mu.Lock()
-				results[r] = TeamResult{Role: r, Error: err}
+				results[r] = Result{Role: r, Error: err}
 				mu.Unlock()
 				return
 			}
 
 			var text string
 			for ev := range events {
-				if ev.Type == EventTextDelta && ev.TextDelta != nil {
+				if ev.Type == agentflow.EventTextDelta && ev.TextDelta != nil {
 					text += ev.TextDelta.Text
 				}
 			}
 
 			mu.Lock()
-			results[r] = TeamResult{Role: r, Response: text}
+			results[r] = Result{Role: r, Response: text}
 			mu.Unlock()
 		}(role, task)
 	}
@@ -272,8 +275,8 @@ func (t *Team) RunAll(ctx context.Context, tasks map[string]string) map[string]T
 	return results
 }
 
-// TeamResult holds the outcome of a team member's execution.
-type TeamResult struct {
+// Result holds the outcome of a team member's execution.
+type Result struct {
 	Role     string
 	Response string
 	Error    error
@@ -301,7 +304,7 @@ type sendMessageTool struct {
 	senderRole string
 }
 
-func (t *sendMessageTool) Name() string        { return "send_message" }
+func (t *sendMessageTool) Name() string { return "send_message" }
 func (t *sendMessageTool) Description() string {
 	return "Send a message to another team member. They will receive it on their next turn."
 }
@@ -315,20 +318,20 @@ func (t *sendMessageTool) InputSchema() map[string]any {
 		"required": []string{"to", "message"},
 	}
 }
-func (t *sendMessageTool) Execute(_ context.Context, input json.RawMessage, _ ProgressFunc) (*ToolResult, error) {
+func (t *sendMessageTool) Execute(_ context.Context, input json.RawMessage, _ agentflow.ProgressFunc) (*agentflow.ToolResult, error) {
 	var p struct {
 		To      string `json:"to"`
 		Message string `json:"message"`
 	}
 	if err := json.Unmarshal(input, &p); err != nil {
-		return &ToolResult{Content: err.Error(), IsError: true}, nil
+		return &agentflow.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
 	t.mailbox.Send(MailMessage{From: t.senderRole, To: p.To, Content: p.Message})
-	return &ToolResult{Content: fmt.Sprintf("Message sent to %s", p.To)}, nil
+	return &agentflow.ToolResult{Content: fmt.Sprintf("Message sent to %s", p.To)}, nil
 }
 func (t *sendMessageTool) IsConcurrencySafe(_ json.RawMessage) bool { return false }
 func (t *sendMessageTool) IsReadOnly(_ json.RawMessage) bool        { return false }
-func (t *sendMessageTool) Locality() ToolLocality           { return ToolAny }
+func (t *sendMessageTool) Locality() agentflow.ToolLocality          { return agentflow.ToolAny }
 
 type readMessagesTool struct {
 	mailbox *Mailbox
@@ -340,27 +343,27 @@ func (t *readMessagesTool) Description() string { return "Read unread messages f
 func (t *readMessagesTool) InputSchema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
-func (t *readMessagesTool) Execute(_ context.Context, _ json.RawMessage, _ ProgressFunc) (*ToolResult, error) {
+func (t *readMessagesTool) Execute(_ context.Context, _ json.RawMessage, _ agentflow.ProgressFunc) (*agentflow.ToolResult, error) {
 	msgs := t.mailbox.Receive(t.role)
 	if len(msgs) == 0 {
-		return &ToolResult{Content: "No new messages."}, nil
+		return &agentflow.ToolResult{Content: "No new messages."}, nil
 	}
 	var result string
 	for _, m := range msgs {
 		result += fmt.Sprintf("From %s: %s\n", m.From, m.Content)
 	}
-	return &ToolResult{Content: result}, nil
+	return &agentflow.ToolResult{Content: result}, nil
 }
 func (t *readMessagesTool) IsConcurrencySafe(_ json.RawMessage) bool { return true }
 func (t *readMessagesTool) IsReadOnly(_ json.RawMessage) bool        { return true }
-func (t *readMessagesTool) Locality() ToolLocality           { return ToolAny }
+func (t *readMessagesTool) Locality() agentflow.ToolLocality          { return agentflow.ToolAny }
 
 type setMemoryTool struct {
 	memory *SharedMemory
 	role   string
 }
 
-func (t *setMemoryTool) Name() string        { return "set_shared_memory" }
+func (t *setMemoryTool) Name() string { return "set_shared_memory" }
 func (t *setMemoryTool) Description() string {
 	return "Store information in shared team memory. Other team members can access this."
 }
@@ -374,20 +377,20 @@ func (t *setMemoryTool) InputSchema() map[string]any {
 		"required": []string{"key", "value"},
 	}
 }
-func (t *setMemoryTool) Execute(_ context.Context, input json.RawMessage, _ ProgressFunc) (*ToolResult, error) {
+func (t *setMemoryTool) Execute(_ context.Context, input json.RawMessage, _ agentflow.ProgressFunc) (*agentflow.ToolResult, error) {
 	var p struct {
 		Key   string `json:"key"`
 		Value string `json:"value"`
 	}
 	if err := json.Unmarshal(input, &p); err != nil {
-		return &ToolResult{Content: err.Error(), IsError: true}, nil
+		return &agentflow.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
 	t.memory.Set(p.Key, p.Value)
-	return &ToolResult{Content: fmt.Sprintf("Stored: %s = %s", p.Key, p.Value)}, nil
+	return &agentflow.ToolResult{Content: fmt.Sprintf("Stored: %s = %s", p.Key, p.Value)}, nil
 }
 func (t *setMemoryTool) IsConcurrencySafe(_ json.RawMessage) bool { return false }
 func (t *setMemoryTool) IsReadOnly(_ json.RawMessage) bool        { return false }
-func (t *setMemoryTool) Locality() ToolLocality           { return ToolAny }
+func (t *setMemoryTool) Locality() agentflow.ToolLocality          { return agentflow.ToolAny }
 
 type getMemoryTool struct {
 	memory *SharedMemory
@@ -398,9 +401,9 @@ func (t *getMemoryTool) Description() string { return "Read all shared team memo
 func (t *getMemoryTool) InputSchema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
-func (t *getMemoryTool) Execute(_ context.Context, _ json.RawMessage, _ ProgressFunc) (*ToolResult, error) {
-	return &ToolResult{Content: t.memory.Summary()}, nil
+func (t *getMemoryTool) Execute(_ context.Context, _ json.RawMessage, _ agentflow.ProgressFunc) (*agentflow.ToolResult, error) {
+	return &agentflow.ToolResult{Content: t.memory.Summary()}, nil
 }
 func (t *getMemoryTool) IsConcurrencySafe(_ json.RawMessage) bool { return true }
 func (t *getMemoryTool) IsReadOnly(_ json.RawMessage) bool        { return true }
-func (t *getMemoryTool) Locality() ToolLocality           { return ToolAny }
+func (t *getMemoryTool) Locality() agentflow.ToolLocality          { return agentflow.ToolAny }

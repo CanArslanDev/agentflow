@@ -1,42 +1,44 @@
-package agentflow
+// Package plan provides a two-phase planning workflow for agents. The Plan
+// function creates a structured plan without executing tools, and PlanAndExecute
+// chains planning with tool-powered execution.
+package plan
 
 import (
 	"context"
-	"io"
 	"strings"
+
+	"github.com/CanArslanDev/agentflow"
 )
 
-// PlanResult holds the output of a planning phase.
-type PlanResult struct {
-	Plan     string    // The structured plan text.
-	Messages []Message // Full conversation from planning.
+// Result holds the output of a planning phase.
+type Result struct {
+	Plan     string             // The structured plan text.
+	Messages []agentflow.Message // Full conversation from planning.
 }
 
 // Plan runs the agent in planning-only mode: the model creates a structured plan
 // but does not execute any tools. Returns the plan text that can be reviewed
 // before execution.
 //
-//	plan, err := agentflow.Plan(ctx, provider, "Build a REST API in Go")
-//	fmt.Println(plan.Plan)
-//	// Review, then execute:
-//	for ev := range agent.Run(ctx, append(plan.Messages, agentflow.NewUserMessage("Execute the plan"))) { ... }
-func Plan(ctx context.Context, provider Provider, task string) (*PlanResult, error) {
-	agent := NewAgent(provider,
-		WithSystemPrompt(planSystemPrompt),
-		WithMaxTurns(1),
-		WithMaxTokens(2048),
+//	result, err := plan.Plan(ctx, provider, "Build a REST API in Go")
+//	fmt.Println(result.Plan)
+func Plan(ctx context.Context, provider agentflow.Provider, task string) (*Result, error) {
+	agent := agentflow.NewAgent(provider,
+		agentflow.WithSystemPrompt(systemPrompt),
+		agentflow.WithMaxTurns(1),
+		agentflow.WithMaxTokens(2048),
 	)
 
 	var planText strings.Builder
-	var messages []Message
+	var messages []agentflow.Message
 
-	for ev := range agent.Run(ctx, []Message{NewUserMessage(task)}) {
+	for ev := range agent.Run(ctx, []agentflow.Message{agentflow.NewUserMessage(task)}) {
 		switch ev.Type {
-		case EventTextDelta:
+		case agentflow.EventTextDelta:
 			if ev.TextDelta != nil {
 				planText.WriteString(ev.TextDelta.Text)
 			}
-		case EventTurnEnd:
+		case agentflow.EventTurnEnd:
 			if ev.TurnEnd != nil {
 				messages = ev.TurnEnd.Messages
 			}
@@ -44,10 +46,10 @@ func Plan(ctx context.Context, provider Provider, task string) (*PlanResult, err
 	}
 
 	if planText.Len() == 0 {
-		return nil, ErrProviderUnavailable
+		return nil, agentflow.ErrProviderUnavailable
 	}
 
-	return &PlanResult{
+	return &Result{
 		Plan:     planText.String(),
 		Messages: messages,
 	}, nil
@@ -55,35 +57,35 @@ func Plan(ctx context.Context, provider Provider, task string) (*PlanResult, err
 
 // PlanAndExecute first creates a plan, then executes it in a second agent run
 // with full tool access. Events from both phases are streamed through the channel.
-func PlanAndExecute(ctx context.Context, provider Provider, task string, tools []Tool, opts ...Option) <-chan Event {
-	events := make(chan Event, DefaultEventBufferSize)
+func PlanAndExecute(ctx context.Context, provider agentflow.Provider, task string, tools []agentflow.Tool, opts ...agentflow.Option) <-chan agentflow.Event {
+	events := make(chan agentflow.Event, agentflow.DefaultEventBufferSize)
 
 	go func() {
 		defer close(events)
 
 		// Phase 1: Plan.
-		events <- Event{
-			Type:      EventTurnStart,
-			TurnStart: &TurnStartEvent{TurnNumber: 0}, // Turn 0 = planning phase.
+		events <- agentflow.Event{
+			Type:      agentflow.EventTurnStart,
+			TurnStart: &agentflow.TurnStartEvent{TurnNumber: 0}, // Turn 0 = planning phase.
 		}
 
-		planAgent := NewAgent(provider,
-			WithSystemPrompt(planSystemPrompt),
-			WithMaxTurns(1),
-			WithMaxTokens(2048),
+		planAgent := agentflow.NewAgent(provider,
+			agentflow.WithSystemPrompt(systemPrompt),
+			agentflow.WithMaxTurns(1),
+			agentflow.WithMaxTokens(2048),
 		)
 
 		var planText strings.Builder
-		var planMessages []Message
+		var planMessages []agentflow.Message
 
-		for ev := range planAgent.Run(ctx, []Message{NewUserMessage(task)}) {
+		for ev := range planAgent.Run(ctx, []agentflow.Message{agentflow.NewUserMessage(task)}) {
 			switch ev.Type {
-			case EventTextDelta:
+			case agentflow.EventTextDelta:
 				events <- ev
 				if ev.TextDelta != nil {
 					planText.WriteString(ev.TextDelta.Text)
 				}
-			case EventTurnEnd:
+			case agentflow.EventTurnEnd:
 				if ev.TurnEnd != nil {
 					planMessages = ev.TurnEnd.Messages
 				}
@@ -91,27 +93,27 @@ func PlanAndExecute(ctx context.Context, provider Provider, task string, tools [
 		}
 
 		if planText.Len() == 0 || ctx.Err() != nil {
-			events <- Event{
-				Type:    EventTurnEnd,
-				TurnEnd: &TurnEndEvent{TurnNumber: 0, Reason: TurnEndError},
+			events <- agentflow.Event{
+				Type:    agentflow.EventTurnEnd,
+				TurnEnd: &agentflow.TurnEndEvent{TurnNumber: 0, Reason: agentflow.TurnEndError},
 			}
 			return
 		}
 
-		events <- Event{
-			Type:    EventTurnEnd,
-			TurnEnd: &TurnEndEvent{TurnNumber: 0, Reason: TurnEndComplete, Messages: planMessages},
+		events <- agentflow.Event{
+			Type:    agentflow.EventTurnEnd,
+			TurnEnd: &agentflow.TurnEndEvent{TurnNumber: 0, Reason: agentflow.TurnEndComplete, Messages: planMessages},
 		}
 
 		// Phase 2: Execute with tools.
-		execOpts := append([]Option{
-			WithTools(tools...),
-			WithSystemPrompt("Execute the following plan step by step. Use the available tools.\n\nPlan:\n" + planText.String()),
+		execOpts := append([]agentflow.Option{
+			agentflow.WithTools(tools...),
+			agentflow.WithSystemPrompt("Execute the following plan step by step. Use the available tools.\n\nPlan:\n" + planText.String()),
 		}, opts...)
 
-		execAgent := NewAgent(provider, execOpts...)
+		execAgent := agentflow.NewAgent(provider, execOpts...)
 
-		for ev := range execAgent.Run(ctx, []Message{NewUserMessage("Execute the plan now.")}) {
+		for ev := range execAgent.Run(ctx, []agentflow.Message{agentflow.NewUserMessage("Execute the plan now.")}) {
 			events <- ev
 		}
 	}()
@@ -119,7 +121,7 @@ func PlanAndExecute(ctx context.Context, provider Provider, task string, tools [
 	return events
 }
 
-const planSystemPrompt = `You are a planning specialist. When given a task:
+const systemPrompt = `You are a planning specialist. When given a task:
 
 1. Analyze the task requirements
 2. Break it down into clear, numbered steps
@@ -144,11 +146,9 @@ Format:
 ### Notes:
 - [Any important observations]`
 
-// --- Session Memory Extraction ---
-
 // ExtractMemories analyzes a conversation and extracts key facts worth remembering.
 // Returns a list of memory entries that can be stored for future context.
-func ExtractMemories(ctx context.Context, provider Provider, messages []Message) ([]string, error) {
+func ExtractMemories(ctx context.Context, provider agentflow.Provider, messages []agentflow.Message) ([]string, error) {
 	// Build conversation text for analysis.
 	var conversation strings.Builder
 	for _, msg := range messages {
@@ -162,15 +162,15 @@ func ExtractMemories(ctx context.Context, provider Provider, messages []Message)
 		conversation.WriteString("\n")
 	}
 
-	agent := NewAgent(provider,
-		WithSystemPrompt(memoryExtractionPrompt),
-		WithMaxTurns(1),
-		WithMaxTokens(500),
+	agent := agentflow.NewAgent(provider,
+		agentflow.WithSystemPrompt(memoryExtractionPrompt),
+		agentflow.WithMaxTurns(1),
+		agentflow.WithMaxTokens(500),
 	)
 
 	var result strings.Builder
-	for ev := range agent.Run(ctx, []Message{NewUserMessage(conversation.String())}) {
-		if ev.Type == EventTextDelta && ev.TextDelta != nil {
+	for ev := range agent.Run(ctx, []agentflow.Message{agentflow.NewUserMessage(conversation.String())}) {
+		if ev.Type == agentflow.EventTextDelta && ev.TextDelta != nil {
 			result.WriteString(ev.TextDelta.Text)
 		}
 	}
@@ -204,6 +204,3 @@ const memoryExtractionPrompt = `Analyze the following conversation and extract k
 Output as a bullet list. Each bullet should be a self-contained fact.
 Only include information that would be useful in future conversations.
 If there are no memorable facts, output nothing.`
-
-// --- Ensure io.EOF usage ---
-var _ = io.EOF

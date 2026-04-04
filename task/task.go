@@ -1,4 +1,6 @@
-package agentflow
+// Package task provides a thread-safe task store for agents to create, track,
+// and manage units of work during execution.
+package task
 
 import (
 	"fmt"
@@ -7,14 +9,14 @@ import (
 	"time"
 )
 
-// TaskStatus represents the lifecycle state of a task.
-type TaskStatus string
+// Status represents the lifecycle state of a task.
+type Status string
 
 const (
-	TaskPending    TaskStatus = "pending"
-	TaskInProgress TaskStatus = "in_progress"
-	TaskCompleted  TaskStatus = "completed"
-	TaskFailed     TaskStatus = "failed"
+	Pending    Status = "pending"
+	InProgress Status = "in_progress"
+	Completed  Status = "completed"
+	Failed     Status = "failed"
 )
 
 // Task represents a unit of work that an agent creates, tracks, and completes.
@@ -22,87 +24,87 @@ type Task struct {
 	ID          int            `json:"id"`
 	Title       string         `json:"title"`
 	Description string         `json:"description,omitempty"`
-	Status      TaskStatus     `json:"status"`
+	Status      Status         `json:"status"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
-// TaskStore manages tasks for an agent run. It is safe for concurrent use.
-type TaskStore struct {
+// Store manages tasks for an agent run. It is safe for concurrent use.
+type Store struct {
 	mu     sync.RWMutex
 	tasks  map[int]*Task
 	nextID atomic.Int64
 }
 
-// NewTaskStore creates an empty task store.
-func NewTaskStore() *TaskStore {
-	return &TaskStore{
+// NewStore creates an empty task store.
+func NewStore() *Store {
+	return &Store{
 		tasks: make(map[int]*Task),
 	}
 }
 
 // Create adds a new task and returns its assigned ID.
-func (s *TaskStore) Create(title, description string) *Task {
+func (s *Store) Create(title, description string) *Task {
 	id := int(s.nextID.Add(1))
 	now := time.Now().UTC()
 
-	task := &Task{
+	t := &Task{
 		ID:          id,
 		Title:       title,
 		Description: description,
-		Status:      TaskPending,
+		Status:      Pending,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
 
 	s.mu.Lock()
-	s.tasks[id] = task
+	s.tasks[id] = t
 	s.mu.Unlock()
 
-	return task
+	return t
 }
 
 // Get returns a task by ID. Returns nil if not found.
-func (s *TaskStore) Get(id int) *Task {
+func (s *Store) Get(id int) *Task {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	task, ok := s.tasks[id]
+	t, ok := s.tasks[id]
 	if !ok {
 		return nil
 	}
-	cp := *task
+	cp := *t
 	return &cp
 }
 
 // Update modifies a task's status and optional fields. Returns error if not found.
-func (s *TaskStore) Update(id int, status TaskStatus, description string) error {
+func (s *Store) Update(id int, status Status, description string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	task, ok := s.tasks[id]
+	t, ok := s.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %d not found", id)
 	}
 
-	task.Status = status
-	task.UpdatedAt = time.Now().UTC()
+	t.Status = status
+	t.UpdatedAt = time.Now().UTC()
 	if description != "" {
-		task.Description = description
+		t.Description = description
 	}
 	return nil
 }
 
 // List returns all tasks ordered by ID.
-func (s *TaskStore) List() []*Task {
+func (s *Store) List() []*Task {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	result := make([]*Task, 0, len(s.tasks))
 	for i := 1; i <= int(s.nextID.Load()); i++ {
-		if task, ok := s.tasks[i]; ok {
-			cp := *task
+		if t, ok := s.tasks[i]; ok {
+			cp := *t
 			result = append(result, &cp)
 		}
 	}
@@ -110,14 +112,14 @@ func (s *TaskStore) List() []*Task {
 }
 
 // Count returns the total number of tasks.
-func (s *TaskStore) Count() int {
+func (s *Store) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.tasks)
 }
 
 // Summary returns a formatted string of all tasks.
-func (s *TaskStore) Summary() string {
+func (s *Store) Summary() string {
 	tasks := s.List()
 	if len(tasks) == 0 {
 		return "No tasks."
@@ -127,13 +129,13 @@ func (s *TaskStore) Summary() string {
 	for _, t := range tasks {
 		status := string(t.Status)
 		switch t.Status {
-		case TaskPending:
+		case Pending:
 			status = "[ ] pending"
-		case TaskInProgress:
+		case InProgress:
 			status = "[~] in progress"
-		case TaskCompleted:
+		case Completed:
 			status = "[x] completed"
-		case TaskFailed:
+		case Failed:
 			status = "[!] failed"
 		}
 		result += fmt.Sprintf("#%d %s — %s", t.ID, status, t.Title)

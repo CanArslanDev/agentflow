@@ -491,6 +491,19 @@ agentflow/
 | `provider/fallback/fallback_test.go` | fallback | Cascading failover logic |
 | `internal/jsonschema/validate_test.go` | jsonschema | Schema validation: types, required, enum, nested |
 
+## README Maintenance
+
+When a significant structural change is made to the project, you MUST update README.md to reflect it. Significant changes include:
+- New packages or directories added
+- New built-in tools added
+- New interfaces or config options added
+- Provider changes (new providers, API changes)
+- New middleware or extension packages
+- Architecture changes (new event types, new pipeline steps)
+- New examples or deployment patterns
+
+Keep README.md in sync with the actual codebase. Do not let documentation drift from implementation.
+
 ## Post-Change Testing Workflow
 
 After every code change, you MUST follow this workflow:

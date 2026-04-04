@@ -105,6 +105,14 @@ func (t *Tracer) Hooks() []agentflow.Hook {
 
 func (t *Tracer) preModelCall(_ context.Context, hc *agentflow.HookContext) (*agentflow.HookAction, error) {
 	hc.Metadata["_trace_model_start"] = time.Now()
+
+	// Propagate W3C Trace Context to provider HTTP headers via hook metadata.
+	// The agent copies "request:*" keys into Request.Metadata, which providers
+	// send as HTTP headers.
+	spanID := fmt.Sprintf("span_%d", t.spanCount.Load()+1)
+	traceparent := fmt.Sprintf("00-%s-%s-01", t.traceID, spanID)
+	hc.Metadata["request:traceparent"] = traceparent
+
 	return nil, nil
 }
 
@@ -191,4 +199,9 @@ func (t *Tracer) Finish() *Trace {
 // SpanCount returns the number of spans collected so far.
 func (t *Tracer) SpanCount() int {
 	return int(t.spanCount.Load())
+}
+
+// TraceID returns the trace identifier for this tracer instance.
+func (t *Tracer) TraceID() string {
+	return t.traceID
 }

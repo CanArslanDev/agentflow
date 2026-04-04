@@ -93,6 +93,9 @@ func (p *Provider) CreateStream(ctx context.Context, req *agentflow.Request) (ag
 	if p.orgID != "" {
 		httpReq.Header.Set("OpenAI-Organization", p.orgID)
 	}
+	for k, v := range req.Metadata {
+		httpReq.Header.Set(k, v)
+	}
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {

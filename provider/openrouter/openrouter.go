@@ -95,6 +95,9 @@ func (p *Provider) CreateStream(ctx context.Context, req *agentflow.Request) (ag
 	if p.title != "" {
 		httpReq.Header.Set("X-Title", p.title)
 	}
+	for k, v := range req.Metadata {
+		httpReq.Header.Set(k, v)
+	}
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {

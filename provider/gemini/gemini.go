@@ -91,6 +91,9 @@ func (p *Provider) CreateStream(ctx context.Context, req *agentflow.Request) (ag
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	for k, v := range req.Metadata {
+		httpReq.Header.Set(k, v)
+	}
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {

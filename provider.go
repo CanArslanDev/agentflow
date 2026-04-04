@@ -47,6 +47,12 @@ type Request struct {
 	// StopSequences are optional strings that cause the model to stop generating
 	// when encountered. Support varies by provider.
 	StopSequences []string
+
+	// Metadata carries key-value pairs that providers may propagate as HTTP
+	// headers. Use this for trace context propagation (e.g., "traceparent",
+	// "tracestate") or custom request tagging. Providers add these as headers
+	// prefixed with nothing — keys map directly to header names.
+	Metadata map[string]string
 }
 
 // Stream yields events from a model response. The caller reads events sequentially

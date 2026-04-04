@@ -303,6 +303,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			MaxTokens:     a.config.MaxTokens,
 			Temperature:   a.config.Temperature,
 			StopSequences: nil,
+			Metadata:      extractRequestMetadata(state.metadata),
 		}
 
 		modelStart := time.Now()
@@ -833,6 +834,29 @@ func (a *Agent) limitResult(result *ToolResult) *ToolResult {
 	}
 
 	return limiter.Limit(result, maxChars)
+}
+
+// requestMetadataPrefix is the prefix for hook metadata keys that should be
+// propagated to provider HTTP requests as headers.
+const requestMetadataPrefix = "request:"
+
+// extractRequestMetadata copies entries from hook metadata that have the
+// "request:" prefix into a map suitable for Request.Metadata. Hooks (like
+// the Tracer) write "request:traceparent" = "00-..." which becomes the
+// "traceparent" HTTP header on the provider request.
+func extractRequestMetadata(hookMetadata map[string]any) map[string]string {
+	var result map[string]string
+	for k, v := range hookMetadata {
+		if len(k) > len(requestMetadataPrefix) && k[:len(requestMetadataPrefix)] == requestMetadataPrefix {
+			if str, ok := v.(string); ok {
+				if result == nil {
+					result = make(map[string]string)
+				}
+				result[k[len(requestMetadataPrefix):]] = str
+			}
+		}
+	}
+	return result
 }
 
 // logInfo logs at INFO level if the agent has a logger configured.

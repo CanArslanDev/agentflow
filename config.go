@@ -1,6 +1,9 @@
 package agentflow
 
-import "time"
+import (
+	"log/slog"
+	"time"
+)
 
 // Config controls Agent behavior. Fields are set via functional Option values
 // passed to NewAgent. Zero values indicate defaults.
@@ -62,6 +65,11 @@ type Config struct {
 	// RateLimiter controls the rate of provider API calls. When set, the agent
 	// waits for permission before each CreateStream call. nil means no rate limiting.
 	RateLimiter RateLimiter
+
+	// Logger enables structured logging for agent lifecycle events: model calls,
+	// retries, compaction, budget warnings, and validation errors. nil disables
+	// logging (zero overhead). Use log/slog for structured output.
+	Logger *slog.Logger
 }
 
 // RetryPolicy configures automatic retries for transient errors.
@@ -245,6 +253,19 @@ func WithSessionStore(store SessionStore) Option {
 func WithRateLimiter(limiter RateLimiter) Option {
 	return func(a *Agent) {
 		a.config.RateLimiter = limiter
+	}
+}
+
+// WithLogger enables structured logging for agent lifecycle events.
+// The logger receives log entries for model calls, retries, compaction,
+// budget warnings, and input validation errors. nil disables logging.
+//
+//	agent := agentflow.NewAgent(provider,
+//	    agentflow.WithLogger(slog.Default()),
+//	)
+func WithLogger(logger *slog.Logger) Option {
+	return func(a *Agent) {
+		a.config.Logger = logger
 	}
 }
 

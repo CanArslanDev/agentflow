@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -266,9 +267,17 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 
 		// Context compaction.
 		if a.compactor != nil && a.compactor.ShouldCompact(state.messages, lastUsage) {
+			beforeCount := len(state.messages)
 			compacted, err := a.compactor.Compact(ctx, state.messages)
 			if err == nil {
 				state.messages = compacted
+				a.logInfo("context compacted",
+					slog.Int("turn", state.turnCount),
+					slog.Int("before", beforeCount),
+					slog.Int("after", len(compacted)),
+				)
+			} else {
+				a.logWarn("compaction failed", slog.Int("turn", state.turnCount), slog.String("error", err.Error()))
 			}
 		}
 
@@ -296,8 +305,16 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			StopSequences: nil,
 		}
 
+		modelStart := time.Now()
+		a.logInfo("model call starting",
+			slog.Int("turn", state.turnCount),
+			slog.Int("messages", len(state.messages)),
+			slog.Int("tools", len(req.Tools)),
+		)
+
 		stream, err := a.createStreamWithRetry(ctx, req)
 		if err != nil {
+			a.logError("model call failed", slog.Int("turn", state.turnCount), slog.String("error", err.Error()))
 			a.emit(events, Event{
 				Type:  EventError,
 				Error: &ErrorEvent{Err: err, Retrying: false, TurnCount: state.turnCount},
@@ -313,6 +330,11 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 		stExec := newStreamingToolExecutor(a, state, events)
 		assistantMsg, toolCalls, err := a.consumeStreamWithExecutor(ctx, stream, events, stExec)
 		stream.Close()
+		a.logInfo("model call completed",
+			slog.Int("turn", state.turnCount),
+			slog.Duration("duration", time.Since(modelStart)),
+			slog.Int("tool_calls", len(toolCalls)),
+		)
 		if usage := stream.Usage(); usage != nil {
 			lastUsage = usage
 			a.emit(events, Event{
@@ -324,12 +346,18 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			if bt != nil {
 				exhausted := bt.record(usage)
 				if bt.shouldWarn() {
+					pct := float64(bt.totalConsumed()) / float64(bt.budget.MaxTokens)
+					a.logWarn("token budget warning",
+						slog.Int("consumed", bt.totalConsumed()),
+						slog.Int("max", bt.budget.MaxTokens),
+						slog.Float64("percentage", pct),
+					)
 					a.emit(events, Event{
 						Type: EventBudgetWarning,
 						BudgetWarning: &BudgetWarningEvent{
 							ConsumedTokens: bt.totalConsumed(),
 							MaxTokens:      bt.budget.MaxTokens,
-							Percentage:     float64(bt.totalConsumed()) / float64(bt.budget.MaxTokens),
+							Percentage:     pct,
 						},
 					})
 				}
@@ -634,6 +662,10 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 	if !a.config.DisableInputValidation {
 		if schema := tool.InputSchema(); len(schema) > 0 {
 			if err := jsonschema.Validate(schema, currentCall.Input); err != nil {
+				a.logWarn("tool input validation failed",
+					slog.String("tool", call.Name),
+					slog.String("error", err.Error()),
+				)
 				return emitEarlyReturn(&ToolResult{
 					Content: "input validation error for tool \"" + call.Name + "\": " + err.Error(),
 					IsError: true,
@@ -719,6 +751,11 @@ func (a *Agent) createStreamWithRetry(ctx context.Context, req *Request) (Stream
 			if delay > policy.MaxDelay {
 				delay = policy.MaxDelay
 			}
+			a.logWarn("retrying provider call",
+				slog.Int("attempt", attempt),
+				slog.Duration("delay", delay),
+				slog.String("error", lastErr.Error()),
+			)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
@@ -796,6 +833,27 @@ func (a *Agent) limitResult(result *ToolResult) *ToolResult {
 	}
 
 	return limiter.Limit(result, maxChars)
+}
+
+// logInfo logs at INFO level if the agent has a logger configured.
+func (a *Agent) logInfo(msg string, args ...any) {
+	if a.config.Logger != nil {
+		a.config.Logger.Info(msg, args...)
+	}
+}
+
+// logWarn logs at WARN level if the agent has a logger configured.
+func (a *Agent) logWarn(msg string, args ...any) {
+	if a.config.Logger != nil {
+		a.config.Logger.Warn(msg, args...)
+	}
+}
+
+// logError logs at ERROR level if the agent has a logger configured.
+func (a *Agent) logError(msg string, args ...any) {
+	if a.config.Logger != nil {
+		a.config.Logger.Error(msg, args...)
+	}
 }
 
 // loopState carries mutable state across agentic loop iterations.

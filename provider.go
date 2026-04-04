@@ -132,5 +132,23 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// HealthChecker is an optional interface that providers can implement to
+// support proactive health checking. Use with fallback providers to detect
+// unhealthy backends before they cause request failures.
+type HealthChecker interface {
+	// HealthCheck tests whether the provider is reachable and operational.
+	// Returns nil if healthy, or an error describing the failure.
+	HealthCheck(ctx context.Context) error
+}
+
+// IsHealthy checks if a provider is healthy. If the provider does not
+// implement HealthChecker, it is assumed healthy.
+func IsHealthy(ctx context.Context, p Provider) error {
+	if hc, ok := p.(HealthChecker); ok {
+		return hc.HealthCheck(ctx)
+	}
+	return nil
+}
+
 // Ensure io.EOF is the canonical stream-end signal.
 var _ error = io.EOF

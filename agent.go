@@ -190,6 +190,40 @@ func (a *Agent) Resume(ctx context.Context, sessionID string, additionalMessage 
 	return a.RunSession(ctx, session, messages), nil
 }
 
+// Clone creates a copy of this agent with the same configuration, then applies
+// the given options on top. Useful for deriving specialized agents from a
+// common base without SubAgentConfig.
+//
+//	base := agentflow.NewAgent(provider, agentflow.WithMaxTurns(10))
+//	researcher := base.Clone(agentflow.WithSystemPrompt("You are a researcher."))
+//	writer := base.Clone(agentflow.WithSystemPrompt("You are a writer."))
+func (a *Agent) Clone(opts ...Option) *Agent {
+	// Copy tools map.
+	toolsCopy := make(map[string]Tool, len(a.tools))
+	for k, v := range a.tools {
+		toolsCopy[k] = v
+	}
+
+	// Copy hooks slice.
+	hooksCopy := make([]Hook, len(a.hooks))
+	copy(hooksCopy, a.hooks)
+
+	clone := &Agent{
+		provider:     a.provider,
+		tools:        toolsCopy,
+		hooks:        hooksCopy,
+		permission:   a.permission,
+		compactor:    a.compactor,
+		sessionStore: a.sessionStore,
+		config:       a.config,
+	}
+
+	for _, opt := range opts {
+		opt(clone)
+	}
+	return clone
+}
+
 // AddHook appends a lifecycle hook to the agent. This is useful when hooks
 // need to be added after initial construction (e.g., by extension packages).
 func (a *Agent) AddHook(h Hook) {

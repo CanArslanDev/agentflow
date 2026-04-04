@@ -189,6 +189,30 @@ type HookBlockedEvent struct {
 	TurnCount  int
 }
 
+// FilterEvents returns a channel that only delivers events matching the specified types.
+// The returned channel is closed when the input channel is closed.
+//
+//	for ev := range agentflow.FilterEvents(agent.Run(ctx, msgs), agentflow.EventTextDelta, agentflow.EventTurnEnd) {
+//	    // only text deltas and turn ends
+//	}
+func FilterEvents(ch <-chan Event, types ...EventType) <-chan Event {
+	allowed := make(map[EventType]bool, len(types))
+	for _, t := range types {
+		allowed[t] = true
+	}
+
+	out := make(chan Event, cap(ch))
+	go func() {
+		defer close(out)
+		for ev := range ch {
+			if allowed[ev.Type] {
+				out <- ev
+			}
+		}
+	}()
+	return out
+}
+
 // SubAgentStartEvent signals that a sub-agent has been spawned.
 type SubAgentStartEvent struct {
 	Index int    // Child index (0-based) within SpawnChildren.

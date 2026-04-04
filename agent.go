@@ -259,6 +259,8 @@ func (a *Agent) emit(events chan<- Event, ev Event) {
 	if a.config.OnEvent != nil {
 		a.config.OnEvent(ev)
 	}
+	// Recover from send-on-closed-channel if the loop has already terminated
+	// while a streaming executor goroutine is still finishing.
 	defer func() { recover() }()
 	events <- ev
 }
@@ -268,8 +270,14 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 	state := &loopState{
 		messages: make([]Message, len(messages)),
 		metadata: make(map[string]any),
+		done:     make(chan struct{}),
 	}
 	copy(state.messages, messages)
+
+	defer func() {
+		close(state.done)   // Signal streaming executor goroutines to stop.
+		state.bgWork.Wait() // Wait for them to finish before returning (caller closes events).
+	}()
 
 	var lastUsage *Usage
 	bt := newBudgetTracker(a.config.TokenBudget)
@@ -667,11 +675,16 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 
 	// Pre-tool hooks.
 	currentCall := call
+	// Take a snapshot of messages for hook context to avoid races with the
+	// main loop appending to state.messages while streaming executor runs.
+	msgSnapshot := make([]Message, len(state.messages))
+	copy(msgSnapshot, state.messages)
+
 	for _, hook := range a.hooksForPhase(HookPreToolUse) {
 		action, err := hook.Execute(ctx, &HookContext{
 			Phase:     HookPreToolUse,
 			ToolCall:  &currentCall,
-			Messages:  state.messages,
+			Messages:  msgSnapshot,
 			TurnCount: state.turnCount,
 			Metadata:  state.metadata,
 		})
@@ -804,13 +817,16 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 		},
 	})
 
-	// Post-tool hooks.
+	// Post-tool hooks (use snapshot to avoid race with main loop).
+	postMsgSnapshot := make([]Message, len(state.messages))
+	copy(postMsgSnapshot, state.messages)
+
 	for _, hook := range a.hooksForPhase(HookPostToolUse) {
 		hook.Execute(ctx, &HookContext{
 			Phase:      HookPostToolUse,
 			ToolCall:   &call,
 			ToolResult: result,
-			Messages:   state.messages,
+			Messages:   postMsgSnapshot,
 			TurnCount:  state.turnCount,
 			Metadata:   state.metadata,
 		})
@@ -1010,11 +1026,12 @@ func (a *Agent) logError(msg string, args ...any) {
 }
 
 // loopState carries mutable state across agentic loop iterations.
-// It is never shared across goroutines.
 type loopState struct {
 	messages  []Message
 	turnCount int
 	metadata  map[string]any
+	done      chan struct{} // closed when the loop terminates, guards emit
+	bgWork    sync.WaitGroup // tracks background goroutines (streaming executor)
 }
 
 // toolBatch groups tool calls by their concurrency safety.

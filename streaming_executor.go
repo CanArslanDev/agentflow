@@ -47,9 +47,22 @@ func (e *streamingToolExecutor) submit(call ToolCall) {
 	idx := len(e.pending) - 1
 	e.mu.Unlock()
 
+	e.state.bgWork.Add(1)
 	go func() {
+		defer e.state.bgWork.Done()
 		defer close(tracked.done)
-		result := e.agent.executeSingleTool(context.Background(), call, e.state, e.events)
+		// Use a context derived from the loop's done channel so that
+		// tool execution is cancelled when the loop terminates.
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			select {
+			case <-e.state.done:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		result := e.agent.executeSingleTool(ctx, call, e.state, e.events)
+		cancel()
 		e.mu.Lock()
 		e.pending[idx].result = result
 		e.mu.Unlock()

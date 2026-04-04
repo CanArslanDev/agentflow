@@ -1,23 +1,28 @@
-package agentflow_test
+package observability_test
 
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/CanArslanDev/agentflow"
 	"github.com/CanArslanDev/agentflow/observability"
+	"github.com/CanArslanDev/agentflow/provider/groq"
 	"github.com/CanArslanDev/agentflow/provider/mock"
 	"github.com/CanArslanDev/agentflow/tools"
 )
 
-// ==========================================================================
-// T3.3: OBSERVABILITY (Tracer)
-// ==========================================================================
+func groqProvider(t *testing.T) *groq.Provider {
+	key := os.Getenv("GROQ_API_KEY")
+	if key == "" {
+		t.Skip("GROQ_API_KEY not set")
+	}
+	return groq.New(key, "llama-3.3-70b-versatile")
+}
 
-// TestIntegration_Tier3_Tracer — tracer tum span'lari yakalar.
-func TestIntegration_Tier3_Tracer(t *testing.T) {
+func TestIntegration_Tracer(t *testing.T) {
 	provider := groqProvider(t)
 
 	tracer := observability.NewTracer()
@@ -72,12 +77,7 @@ func TestIntegration_Tier3_Tracer(t *testing.T) {
 	}
 }
 
-// ==========================================================================
-// T3.4: COST TRACKING
-// ==========================================================================
-
-// TestIntegration_Tier3_CostTracker — maliyet hesabi yapilir.
-func TestIntegration_Tier3_CostTracker(t *testing.T) {
+func TestIntegration_CostTracker(t *testing.T) {
 	provider := groqProvider(t)
 
 	tracker := observability.NewCostTracker()
@@ -121,11 +121,9 @@ func TestIntegration_Tier3_CostTracker(t *testing.T) {
 	}
 }
 
-// TestIntegration_Tier3_CostTrackerWithModel — model-specific pricing.
-func TestIntegration_Tier3_CostTrackerWithModel(t *testing.T) {
+func TestIntegration_CostTrackerWithModel(t *testing.T) {
 	tracker := observability.NewCostTracker()
 
-	// Simulate usage for a known model.
 	tracker.TrackUsage("llama-3.3-70b-versatile", 1000, 500)
 	tracker.TrackUsage("llama-3.3-70b-versatile", 2000, 1000)
 
@@ -134,18 +132,12 @@ func TestIntegration_Tier3_CostTrackerWithModel(t *testing.T) {
 
 	t.Logf("Simulated: prompt=%d, completion=%d, cost=$%.6f", prompt, completion, cost)
 
-	// llama-3.3-70b: $0.59/1M prompt, $0.79/1M completion
-	// 3000 prompt tokens = $0.00177
-	// 1500 completion tokens = $0.001185
-	// Total = ~$0.002955
 	if cost < 0.002 || cost > 0.004 {
 		t.Errorf("expected cost ~$0.003, got $%.6f", cost)
 	}
 }
 
-// TestIntegration_Tier3_TracerWithToolCalls — tracer tool span'larini yakalar.
-func TestIntegration_Tier3_TracerWithToolCalls(t *testing.T) {
-	// Mock provider ile tracer'in tool span'larini test et.
+func TestIntegration_TracerWithToolCalls(t *testing.T) {
 	provider := mock.New(
 		mock.WithResponse(
 			mock.ToolCallEvent("tc1", "test_tool", `{}`),
@@ -209,8 +201,7 @@ func TestIntegration_Tier3_TracerWithToolCalls(t *testing.T) {
 	}
 }
 
-// TestIntegration_Tier3_CostAndTracer — ikisi birlikte calisir.
-func TestIntegration_Tier3_CostAndTracer(t *testing.T) {
+func TestIntegration_CostAndTracer(t *testing.T) {
 	provider := groqProvider(t)
 
 	tracer := observability.NewTracer()

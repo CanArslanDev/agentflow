@@ -3,6 +3,7 @@ package agentflow
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // Tool defines a capability that an agent can invoke. Tools are registered with
@@ -123,6 +124,14 @@ const (
 // accidental remote execution of local-only tools.
 type LocalityAware interface {
 	Locality() ToolLocality
+}
+
+// TimeoutAware is an optional interface that tools can implement to declare
+// their own execution timeout. When implemented and the returned duration is
+// positive, this timeout takes precedence over the global WithToolTimeout
+// configuration. Tools that do not implement this interface use the global timeout.
+type TimeoutAware interface {
+	Timeout() time.Duration
 }
 
 // toolLocality returns the locality of a tool. If the tool implements

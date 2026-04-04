@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/CanArslanDev/agentflow"
 )
@@ -38,6 +39,7 @@ type Builder struct {
 	concurrencySafe bool
 	readOnly        bool
 	locality        agentflow.ToolLocality
+	timeout         time.Duration
 }
 
 // New creates a Builder with the given name and description.
@@ -73,6 +75,13 @@ func (b *Builder) ConcurrencySafe(v bool) *Builder {
 // WithLocality sets the tool's execution environment compatibility.
 func (b *Builder) WithLocality(l agentflow.ToolLocality) *Builder {
 	b.locality = l
+	return b
+}
+
+// WithTimeout sets a tool-specific execution timeout that overrides the global
+// WithToolTimeout agent configuration. Only applies when positive.
+func (b *Builder) WithTimeout(d time.Duration) *Builder {
+	b.timeout = d
 	return b
 }
 
@@ -117,10 +126,12 @@ func (b *Builder) build() agentflow.Tool {
 		concurrencySafe: b.concurrencySafe,
 		readOnly:        b.readOnly,
 		locality:        b.locality,
+		timeout:         b.timeout,
 	}
 }
 
-// builtTool implements agentflow.Tool and agentflow.LocalityAware.
+// builtTool implements agentflow.Tool, agentflow.LocalityAware, and optionally
+// agentflow.TimeoutAware.
 type builtTool struct {
 	name            string
 	description     string
@@ -129,6 +140,7 @@ type builtTool struct {
 	concurrencySafe bool
 	readOnly        bool
 	locality        agentflow.ToolLocality
+	timeout         time.Duration
 }
 
 func (t *builtTool) Name() string                     { return t.name }
@@ -138,6 +150,7 @@ func (t *builtTool) IsConcurrencySafe(_ json.RawMessage) bool { return t.concurr
 func (t *builtTool) IsReadOnly(_ json.RawMessage) bool        { return t.readOnly }
 
 func (t *builtTool) Locality() agentflow.ToolLocality { return t.locality }
+func (t *builtTool) Timeout() time.Duration           { return t.timeout }
 
 func (t *builtTool) Execute(ctx context.Context, input json.RawMessage, progress agentflow.ProgressFunc) (*agentflow.ToolResult, error) {
 	return t.executeFn(ctx, input, progress)

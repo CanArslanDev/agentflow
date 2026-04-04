@@ -85,6 +85,19 @@ type Config struct {
 	// retries, compaction, budget warnings, and validation errors. nil disables
 	// logging (zero overhead). Use log/slog for structured output.
 	Logger *slog.Logger
+
+	// ThinkingPrompt enables agentic thinking for non-native thinking models.
+	// When set, the first turn's text output is emitted as EventThinkingDelta
+	// instead of EventTextDelta. After the thinking turn completes, AnswerPrompt
+	// is injected as a user message to trigger the final answer turn.
+	// If the provider natively supports thinking (emits StreamEventThinkingDelta),
+	// this feature is automatically disabled for that request.
+	// Empty string means disabled (default).
+	ThinkingPrompt string
+
+	// AnswerPrompt is injected after the thinking turn to trigger the final answer.
+	// Only used when ThinkingPrompt is set.
+	AnswerPrompt string
 }
 
 // RetryPolicy configures automatic retries for transient errors.
@@ -325,6 +338,27 @@ func WithRateLimiter(limiter RateLimiter) Option {
 func WithLogger(logger *slog.Logger) Option {
 	return func(a *Agent) {
 		a.config.Logger = logger
+	}
+}
+
+// WithThinkingPrompt enables agentic thinking for non-native thinking models.
+// The first turn emits all model output as EventThinkingDelta (not EventTextDelta).
+// After the thinking turn, answerPrompt is injected as a user message and the
+// model generates a normal response emitted as EventTextDelta.
+//
+// If the provider natively supports thinking (emits StreamEventThinkingDelta),
+// this feature is automatically disabled — native thinking takes precedence.
+//
+//	agent := agentflow.NewAgent(provider,
+//	    agentflow.WithThinkingPrompt(
+//	        "Analyze this step by step. Do not provide a final answer yet.",
+//	        "Now provide a clear and concise final answer.",
+//	    ),
+//	)
+func WithThinkingPrompt(thinkPrompt, answerPrompt string) Option {
+	return func(a *Agent) {
+		a.config.ThinkingPrompt = thinkPrompt
+		a.config.AnswerPrompt = answerPrompt
 	}
 }
 

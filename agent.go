@@ -356,6 +356,17 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			Metadata:      extractRequestMetadata(state.metadata),
 		}
 
+		// Agentic thinking: on the thinking turn, inject thinking prompt and hide tools.
+		if a.config.ThinkingPrompt != "" && !state.thinkingCompleted && !state.nativeThinkingSeen {
+			state.isThinkingTurn = true
+			if req.SystemPrompt != "" {
+				req.SystemPrompt += "\n\n" + a.config.ThinkingPrompt
+			} else {
+				req.SystemPrompt = a.config.ThinkingPrompt
+			}
+			req.Tools = nil // Model should only think, not call tools.
+		}
+
 		modelStart := time.Now()
 		a.logInfo("model call starting",
 			slog.Int("turn", state.turnCount),
@@ -452,6 +463,21 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 
 		// Check if tool calls are needed.
 		if len(toolCalls) == 0 {
+			// Agentic thinking: thinking turn completed, inject answer prompt.
+			if state.isThinkingTurn && !state.nativeThinkingSeen {
+				state.isThinkingTurn = false
+				state.thinkingCompleted = true
+				state.messages = append(state.messages, Message{
+					Role:    RoleUser,
+					Content: []ContentBlock{{Type: ContentText, Text: a.config.AnswerPrompt}},
+				})
+				a.emit(events, Event{
+					Type:    EventTurnEnd,
+					TurnEnd: &TurnEndEvent{TurnNumber: state.turnCount, Reason: TurnEndComplete, Messages: state.messages},
+				})
+				continue // Proceed to answer turn.
+			}
+
 			// No tool calls — check turn-end hooks for possible continuation.
 			shouldContinue := false
 			for _, hook := range a.hooksForPhase(HookOnTurnEnd) {
@@ -501,7 +527,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 // submits tool calls to the streaming executor as they arrive, rather than waiting
 // for the stream to finish. This overlaps model generation with tool execution.
 func (a *Agent) consumeStreamWithExecutor(ctx context.Context, stream Stream, events chan<- Event, executor *streamingToolExecutor) (Message, []ToolCall, error) {
-	msg, calls, err := a.consumeStream(ctx, stream, events)
+	msg, calls, err := a.consumeStream(ctx, stream, events, executor.state)
 	if err != nil {
 		return msg, calls, err
 	}
@@ -519,8 +545,10 @@ func (a *Agent) consumeStreamWithExecutor(ctx context.Context, stream Stream, ev
 
 // consumeStream reads all events from the provider stream, emitting text deltas
 // to the event channel and collecting tool calls. Returns the complete assistant
-// message and extracted tool calls.
-func (a *Agent) consumeStream(ctx context.Context, stream Stream, events chan<- Event) (Message, []ToolCall, error) {
+// message and extracted tool calls. The state parameter is used for agentic
+// thinking: when state.isThinkingTurn is true, text deltas are emitted as
+// EventThinkingDelta instead of EventTextDelta.
+func (a *Agent) consumeStream(ctx context.Context, stream Stream, events chan<- Event, state *loopState) (Message, []ToolCall, error) {
 	var textParts []string
 	var toolCalls []ToolCall
 	var blocks []ContentBlock
@@ -541,15 +569,28 @@ func (a *Agent) consumeStream(ctx context.Context, stream Stream, events chan<- 
 		switch ev.Type {
 		case StreamEventDelta:
 			if ev.Delta != nil {
-				a.emit(events, Event{
-					Type:      EventTextDelta,
-					TextDelta: &TextDeltaEvent{Text: ev.Delta.Text},
-				})
+				if state != nil && state.isThinkingTurn {
+					// Agentic thinking: emit text as thinking delta.
+					a.emit(events, Event{
+						Type:       EventThinkingDelta,
+						ThinkDelta: &TextDeltaEvent{Text: ev.Delta.Text},
+					})
+				} else {
+					a.emit(events, Event{
+						Type:      EventTextDelta,
+						TextDelta: &TextDeltaEvent{Text: ev.Delta.Text},
+					})
+				}
 				textParts = append(textParts, ev.Delta.Text)
 			}
 
 		case StreamEventThinkingDelta:
 			if ev.ThinkingDelta != nil {
+				// Native thinking detected — disable agentic thinking.
+				if state != nil {
+					state.nativeThinkingSeen = true
+					state.isThinkingTurn = false
+				}
 				a.emit(events, Event{
 					Type:       EventThinkingDelta,
 					ThinkDelta: &TextDeltaEvent{Text: ev.ThinkingDelta.Text},
@@ -761,8 +802,16 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		toolCtx := ctx
 		var cancelTimeout context.CancelFunc
-		if a.config.ToolTimeout > 0 {
-			toolCtx, cancelTimeout = context.WithTimeout(ctx, a.config.ToolTimeout)
+
+		// Determine timeout: tool-specific (TimeoutAware) overrides global.
+		timeout := a.config.ToolTimeout
+		if ta, ok := tool.(TimeoutAware); ok {
+			if toolTimeout := ta.Timeout(); toolTimeout > 0 {
+				timeout = toolTimeout
+			}
+		}
+		if timeout > 0 {
+			toolCtx, cancelTimeout = context.WithTimeout(ctx, timeout)
 		}
 
 		var toolErr error
@@ -1032,6 +1081,11 @@ type loopState struct {
 	metadata  map[string]any
 	done      chan struct{} // closed when the loop terminates, guards emit
 	bgWork    sync.WaitGroup // tracks background goroutines (streaming executor)
+
+	// Agentic thinking state (for non-native thinking models).
+	isThinkingTurn     bool // true when current turn should emit ThinkingDelta
+	thinkingCompleted  bool // true after the thinking turn has finished
+	nativeThinkingSeen bool // true if provider emitted StreamEventThinkingDelta
 }
 
 // toolBatch groups tool calls by their concurrency safety.

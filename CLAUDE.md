@@ -93,6 +93,7 @@ Tools (tools/builder.go, tools/typed.go, tools/builtin/)
 | `HealthChecker` | provider.go | Optional: proactive provider health check |
 | `Tool` | tool.go | Agent capability (function calling) |
 | `LocalityAware` | tool.go | Optional: declare local/remote safety |
+| `TimeoutAware` | tool.go | Optional: tool-specific execution timeout |
 | `Hook` | hook.go | Single-phase lifecycle interception |
 | `MultiPhaseHook` | hook.go | Multi-phase lifecycle interception |
 | `PermissionChecker` | permission.go | Tool access control |
@@ -131,6 +132,7 @@ All options are set via functional `Option` values passed to `NewAgent`:
 | `WithRateLimiter(l)` | Rate limit provider API calls |
 | `WithLogger(l)` | Structured logging (slog.Logger) |
 | `WithDisableInputValidation()` | Skip JSON Schema validation |
+| `WithThinkingPrompt(t,a)` | Agentic thinking for non-native models |
 
 ### Event Types (event.go)
 

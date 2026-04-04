@@ -178,13 +178,28 @@ func (p *Provider) convertUserMessage(msg agentflow.Message) requestMessage {
 					}
 					blocks = append(blocks, contentBlock{
 						Type: "image",
-						Source: &imageSource{
+						Source: &mediaSource{
 							Type:      "base64",
 							MediaType: mediaType,
 							Data:      b.Image.Data,
 						},
 					})
 				}
+			}
+		case agentflow.ContentDocument:
+			if b.Document != nil && b.Document.Data != "" {
+				mediaType := b.Document.MediaType
+				if mediaType == "" {
+					mediaType = "application/octet-stream"
+				}
+				blocks = append(blocks, contentBlock{
+					Type: "document",
+					Source: &mediaSource{
+						Type:      "base64",
+						MediaType: mediaType,
+						Data:      b.Document.Data,
+					},
+				})
 			}
 		case agentflow.ContentToolResult:
 			if b.ToolResult != nil {

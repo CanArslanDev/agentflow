@@ -143,6 +143,75 @@ func TestAnthropic_ErrorResponse(t *testing.T) {
 	}
 }
 
+func TestAnthropic_DocumentMessage(t *testing.T) {
+	var receivedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w,
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Summary here\"}}\n\n",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":3}}\n\n",
+			"event: message_stop\ndata: {}\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := anthropic.New("test-key", "claude-sonnet-4-20250514", anthropic.WithBaseURL(server.URL))
+
+	msg := agentflow.NewDocumentMessage("Summarize this PDF",
+		agentflow.DocumentContent{
+			Filename:  "report.pdf",
+			MediaType: "application/pdf",
+			Data:      "JVBERi0xLjQ=",
+		},
+	)
+
+	stream, err := provider.CreateStream(context.Background(), &agentflow.Request{
+		Messages: []agentflow.Message{msg},
+	})
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	defer stream.Close()
+
+	// Drain stream.
+	for {
+		_, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+	}
+
+	bodyStr := string(receivedBody)
+	// Verify document block is present in the request.
+	if !contains(bodyStr, `"type":"document"`) {
+		t.Errorf("request body should contain document type, got: %s", bodyStr)
+	}
+	if !contains(bodyStr, `"media_type":"application/pdf"`) {
+		t.Errorf("request body should contain media_type, got: %s", bodyStr)
+	}
+	if !contains(bodyStr, `"data":"JVBERi0xLjQ="`) {
+		t.Errorf("request body should contain base64 data, got: %s", bodyStr)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAnthropic_ModelID(t *testing.T) {
 	provider := anthropic.New("key", "claude-sonnet-4-20250514")
 	if provider.ModelID() != "claude-sonnet-4-20250514" {

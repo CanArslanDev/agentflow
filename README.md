@@ -185,6 +185,7 @@ Built-in providers:
 | Google Gemini | `provider/gemini` | gemini-2.0-flash, gemini-2.5-pro | API key in URL param |
 | Groq | `provider/groq` | llama-3.3-70b, mixtral-8x7b | `Authorization: Bearer gsk_...` |
 | OpenRouter | `provider/openrouter` | All models via unified API | `Authorization: Bearer sk-or-...` |
+| Ollama | `provider/ollama` | Any Ollama model (llama3, mistral, etc.) | None (URL-based) |
 | Fallback | `provider/fallback` | Cascading failover across any providers | N/A |
 | Mock | `provider/mock` | Deterministic testing without API calls | N/A |
 
@@ -582,7 +583,7 @@ agentflow/
     agent.go              Agent, Run(), RunSync(), RunSession(), Resume(), Clone()
     config.go             Config, 22 WithXxx() options
     tool.go               Tool interface, ExecutionMode, ToolLocality
-    message.go            Message, ContentBlock, multimodal
+    message.go            Message, ContentBlock, multimodal, documents
     event.go              17 EventTypes, FilterEvents()
     hook.go               Hook, MultiPhaseHook, HookFunc
     permission.go         PermissionChecker, AllowAll, DenyList, AllowList, Chain
@@ -612,6 +613,7 @@ agentflow/
     provider/gemini/      Google Gemini (custom SSE parser)
     provider/groq/        Groq (uses internal/sse)
     provider/openrouter/  OpenRouter (uses internal/sse)
+    provider/ollama/      Ollama/RunPod (JSONL streaming)
     provider/fallback/    Multi-provider failover
     provider/mock/        Deterministic mock
 

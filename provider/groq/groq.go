@@ -60,11 +60,25 @@ func WithHTTPClient(c *http.Client) ProviderOption {
 	return func(p *Provider) { p.client = c }
 }
 
+// groqChatRequest wraps the shared ChatRequest to use Groq's preferred
+// max_completion_tokens field instead of max_tokens.
+type groqChatRequest struct {
+	sse.ChatRequest
+	MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
+}
+
 // CreateStream initiates a streaming chat completion request to Groq.
 func (p *Provider) CreateStream(ctx context.Context, req *agentflow.Request) (agentflow.Stream, error) {
 	body := sse.BuildRequestBody(p.model, req)
 
-	jsonBody, err := json.Marshal(body)
+	// Groq API uses max_completion_tokens instead of max_tokens.
+	groqBody := groqChatRequest{ChatRequest: body}
+	if body.MaxTokens > 0 {
+		groqBody.MaxCompletionTokens = body.MaxTokens
+		groqBody.ChatRequest.MaxTokens = 0
+	}
+
+	jsonBody, err := json.Marshal(groqBody)
 	if err != nil {
 		return nil, fmt.Errorf("agentflow/groq: marshal request: %w", err)
 	}

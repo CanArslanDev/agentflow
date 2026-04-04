@@ -26,6 +26,10 @@ const (
 
 	// ContentImage represents an image content block (base64 or URL).
 	ContentImage
+
+	// ContentDocument represents a document/file content block (base64 or URL).
+	// Supported by providers that accept file inputs (PDF, text, CSV, etc.).
+	ContentDocument
 )
 
 // Message is a single entry in the conversation history. Each message has a role
@@ -51,6 +55,9 @@ type ContentBlock struct {
 
 	// Image is set when Type == ContentImage.
 	Image *ImageContent `json:"image,omitempty"`
+
+	// Document is set when Type == ContentDocument.
+	Document *DocumentContent `json:"document,omitempty"`
 }
 
 // ImageContent holds image data for multimodal messages. Either Data (base64)
@@ -63,6 +70,22 @@ type ImageContent struct {
 	Data string `json:"data,omitempty"`
 
 	// URL is a publicly accessible image URL. Set this for URL-referenced images.
+	URL string `json:"url,omitempty"`
+}
+
+// DocumentContent holds document data for file-based messages. Either Data (base64)
+// or URL should be set, not both.
+type DocumentContent struct {
+	// Filename is the original filename (e.g., "report.pdf").
+	Filename string `json:"filename"`
+
+	// MediaType is the MIME type (e.g., "application/pdf", "text/plain", "text/csv").
+	MediaType string `json:"media_type"`
+
+	// Data is the base64-encoded file content. Set this for inline documents.
+	Data string `json:"data,omitempty"`
+
+	// URL is a publicly accessible document URL. Set this for URL-referenced documents.
 	URL string `json:"url,omitempty"`
 }
 
@@ -115,6 +138,34 @@ func (m Message) Images() []ImageContent {
 		}
 	}
 	return images
+}
+
+// NewDocumentMessage creates a user Message with text and one or more documents.
+// Use for requests where you want the model to analyze uploaded files.
+//
+//	msg := agentflow.NewDocumentMessage("Summarize this PDF",
+//	    agentflow.DocumentContent{Filename: "report.pdf", MediaType: "application/pdf", Data: base64Data},
+//	)
+func NewDocumentMessage(text string, docs ...DocumentContent) Message {
+	blocks := make([]ContentBlock, 0, 1+len(docs))
+	if text != "" {
+		blocks = append(blocks, ContentBlock{Type: ContentText, Text: text})
+	}
+	for i := range docs {
+		blocks = append(blocks, ContentBlock{Type: ContentDocument, Document: &docs[i]})
+	}
+	return Message{Role: RoleUser, Content: blocks}
+}
+
+// Documents extracts all document content blocks from the message.
+func (m Message) Documents() []DocumentContent {
+	var docs []DocumentContent
+	for _, block := range m.Content {
+		if block.Type == ContentDocument && block.Document != nil {
+			docs = append(docs, *block.Document)
+		}
+	}
+	return docs
 }
 
 // NewAssistantMessage creates a Message with a single text content block from the assistant.

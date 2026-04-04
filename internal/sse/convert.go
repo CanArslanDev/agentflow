@@ -44,9 +44,10 @@ func convertUserMessage(msg agentflow.Message) []RequestMessage {
 		return msgs
 	}
 
-	// Check for multimodal content (images).
+	// Check for multimodal content (images or documents).
 	images := msg.Images()
-	if len(images) > 0 {
+	docs := msg.Documents()
+	if len(images) > 0 || len(docs) > 0 {
 		parts := buildMultimodalParts(msg)
 		return []RequestMessage{{Role: "user", Content: parts}}
 	}
@@ -78,6 +79,22 @@ func buildMultimodalParts(msg agentflow.Message) []ContentPart {
 					parts = append(parts, ContentPart{
 						Type:     "image_url",
 						ImageURL: &ImageURL{URL: url},
+					})
+				}
+			}
+		case agentflow.ContentDocument:
+			if block.Document != nil {
+				fileData := block.Document.URL
+				if fileData == "" && block.Document.Data != "" {
+					fileData = fmt.Sprintf("data:%s;base64,%s", block.Document.MediaType, block.Document.Data)
+				}
+				if fileData != "" {
+					parts = append(parts, ContentPart{
+						Type: "file",
+						File: &FileContent{
+							Filename: block.Document.Filename,
+							FileData: fileData,
+						},
 					})
 				}
 			}

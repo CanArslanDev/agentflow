@@ -121,6 +121,59 @@ func TestGemini_ErrorResponse(t *testing.T) {
 	}
 }
 
+func TestGemini_DocumentMessage(t *testing.T) {
+	var receivedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]}}]}\n\n")
+	}))
+	defer server.Close()
+
+	provider := gemini.New("test-key", "gemini-2.0-flash", gemini.WithBaseURL(server.URL))
+
+	msg := agentflow.NewDocumentMessage("Summarize",
+		agentflow.DocumentContent{
+			Filename:  "data.csv",
+			MediaType: "text/csv",
+			Data:      "Y29sMSxjb2wy",
+		},
+	)
+
+	stream, err := provider.CreateStream(context.Background(), &agentflow.Request{
+		Messages: []agentflow.Message{msg},
+	})
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	defer stream.Close()
+	// Drain stream.
+	for {
+		_, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+	}
+
+	bodyStr := string(receivedBody)
+	// Verify inlineData with document MIME type is present.
+	if !containsSubstr(bodyStr, `"mimeType":"text/csv"`) {
+		t.Errorf("request body should contain mimeType, got: %s", bodyStr)
+	}
+	if !containsSubstr(bodyStr, `"data":"Y29sMSxjb2wy"`) {
+		t.Errorf("request body should contain base64 data, got: %s", bodyStr)
+	}
+}
+
+func containsSubstr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGemini_ModelID(t *testing.T) {
 	provider := gemini.New("key", "gemini-2.0-flash")
 	if provider.ModelID() != "gemini-2.0-flash" {

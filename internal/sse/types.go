@@ -27,16 +27,23 @@ type RequestMessage struct {
 }
 
 // ContentPart is an element within a multimodal message content array.
-// Used when a message contains both text and images.
+// Used when a message contains text, images, or documents.
 type ContentPart struct {
-	Type     string    `json:"type"`               // "text" or "image_url"
-	Text     string    `json:"text,omitempty"`      // For type "text"
-	ImageURL *ImageURL `json:"image_url,omitempty"` // For type "image_url"
+	Type     string       `json:"type"`               // "text", "image_url", or "file"
+	Text     string       `json:"text,omitempty"`      // For type "text"
+	ImageURL *ImageURL    `json:"image_url,omitempty"` // For type "image_url"
+	File     *FileContent `json:"file,omitempty"`      // For type "file"
 }
 
 // ImageURL holds an image reference for multimodal messages.
 type ImageURL struct {
 	URL string `json:"url"` // base64 data URI or HTTP URL
+}
+
+// FileContent holds a file reference for document content parts.
+type FileContent struct {
+	Filename string `json:"filename"`  // original filename
+	FileData string `json:"file_data"` // data URI or URL
 }
 
 // RequestTool describes a tool available to the model.

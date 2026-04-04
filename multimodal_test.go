@@ -102,6 +102,139 @@ func TestImageMessageWithMockProvider(t *testing.T) {
 	}
 }
 
+// --- Document content tests ---
+
+func TestNewDocumentMessage(t *testing.T) {
+	msg := agentflow.NewDocumentMessage("Summarize this PDF",
+		agentflow.DocumentContent{
+			Filename:  "report.pdf",
+			MediaType: "application/pdf",
+			Data:      "JVBERi0xLjQ=", // fake base64
+		},
+	)
+
+	if msg.Role != agentflow.RoleUser {
+		t.Errorf("expected user role, got %s", msg.Role)
+	}
+	if len(msg.Content) != 2 {
+		t.Fatalf("expected 2 blocks (text + document), got %d", len(msg.Content))
+	}
+	if msg.Content[0].Type != agentflow.ContentText || msg.Content[0].Text != "Summarize this PDF" {
+		t.Error("first block should be text")
+	}
+	if msg.Content[1].Type != agentflow.ContentDocument || msg.Content[1].Document == nil {
+		t.Error("second block should be document")
+	}
+	if msg.Content[1].Document.Filename != "report.pdf" {
+		t.Errorf("expected report.pdf, got %s", msg.Content[1].Document.Filename)
+	}
+	if msg.Content[1].Document.MediaType != "application/pdf" {
+		t.Errorf("expected application/pdf, got %s", msg.Content[1].Document.MediaType)
+	}
+}
+
+func TestNewDocumentMessage_MultipleDocuments(t *testing.T) {
+	msg := agentflow.NewDocumentMessage("Compare these files",
+		agentflow.DocumentContent{Filename: "a.pdf", MediaType: "application/pdf", Data: "data1"},
+		agentflow.DocumentContent{Filename: "b.txt", MediaType: "text/plain", Data: "data2"},
+		agentflow.DocumentContent{Filename: "c.csv", MediaType: "text/csv", Data: "data3"},
+	)
+
+	if len(msg.Content) != 4 { // text + 3 docs
+		t.Errorf("expected 4 blocks, got %d", len(msg.Content))
+	}
+	docs := msg.Documents()
+	if len(docs) != 3 {
+		t.Errorf("expected 3 documents, got %d", len(docs))
+	}
+}
+
+func TestNewDocumentMessage_NoText(t *testing.T) {
+	msg := agentflow.NewDocumentMessage("",
+		agentflow.DocumentContent{Filename: "data.csv", MediaType: "text/csv", Data: "Y29s"},
+	)
+
+	if len(msg.Content) != 1 {
+		t.Errorf("expected 1 block (document only), got %d", len(msg.Content))
+	}
+}
+
+func TestNewDocumentMessage_WithURL(t *testing.T) {
+	msg := agentflow.NewDocumentMessage("Read this",
+		agentflow.DocumentContent{
+			Filename:  "report.pdf",
+			MediaType: "application/pdf",
+			URL:       "https://example.com/report.pdf",
+		},
+	)
+
+	docs := msg.Documents()
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 document, got %d", len(docs))
+	}
+	if docs[0].URL != "https://example.com/report.pdf" {
+		t.Errorf("expected URL, got %q", docs[0].URL)
+	}
+}
+
+func TestDocuments_EmptyMessage(t *testing.T) {
+	msg := agentflow.NewUserMessage("Hello")
+	docs := msg.Documents()
+	if len(docs) != 0 {
+		t.Errorf("expected 0 documents, got %d", len(docs))
+	}
+}
+
+func TestDocumentMessageWithMockProvider(t *testing.T) {
+	provider := mock.New(
+		mock.WithResponse(mock.TextDelta("The document discusses quarterly revenue.")),
+	)
+
+	agent := agentflow.NewAgent(provider, agentflow.WithMaxTurns(1))
+
+	msg := agentflow.NewDocumentMessage("Summarize this document",
+		agentflow.DocumentContent{
+			Filename:  "report.pdf",
+			MediaType: "application/pdf",
+			Data:      "fakebase64pdfdata",
+		},
+	)
+
+	var text string
+	for ev := range agent.Run(context.Background(), []agentflow.Message{msg}) {
+		if ev.Type == agentflow.EventTextDelta {
+			text += ev.TextDelta.Text
+		}
+	}
+
+	if text != "The document discusses quarterly revenue." {
+		t.Errorf("expected mock response, got %q", text)
+	}
+}
+
+func TestMixedImageAndDocumentMessage(t *testing.T) {
+	msg := agentflow.Message{
+		Role: agentflow.RoleUser,
+		Content: []agentflow.ContentBlock{
+			{Type: agentflow.ContentText, Text: "Compare the image with the document"},
+			{Type: agentflow.ContentImage, Image: &agentflow.ImageContent{MediaType: "image/png", Data: "imgdata"}},
+			{Type: agentflow.ContentDocument, Document: &agentflow.DocumentContent{Filename: "data.csv", MediaType: "text/csv", Data: "csvdata"}},
+		},
+	}
+
+	images := msg.Images()
+	docs := msg.Documents()
+	if len(images) != 1 {
+		t.Errorf("expected 1 image, got %d", len(images))
+	}
+	if len(docs) != 1 {
+		t.Errorf("expected 1 document, got %d", len(docs))
+	}
+	if msg.TextContent() != "Compare the image with the document" {
+		t.Errorf("unexpected text: %s", msg.TextContent())
+	}
+}
+
 // --- Integration test: real vision with Groq ---
 
 func TestIntegration_VisionWithGroq(t *testing.T) {

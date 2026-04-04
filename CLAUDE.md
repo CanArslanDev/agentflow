@@ -75,7 +75,7 @@ Core Types (tool.go, message.go, event.go, hook.go, permission.go, provider.go)
     |
 Internal (internal/sse/ -- shared SSE parsing, internal/jsonschema/ -- input validation)
     |
-Providers (provider/openai, provider/anthropic, provider/gemini, provider/groq, provider/openrouter, provider/fallback, provider/mock)
+Providers (provider/openai, provider/anthropic, provider/gemini, provider/groq, provider/openrouter, provider/ollama, provider/fallback, provider/mock)
     |
 Extension Packages (compactor/, team/, observability/, trigger/, plan/, skill/, task/)
     |
@@ -248,6 +248,16 @@ func (p *Provider) CreateStream(ctx context.Context, req *agentflow.Request) (ag
 - Auth via `?key=` URL parameter (not header)
 - Uses `generativelanguage.googleapis.com` base URL
 
+**Ollama** has its own format (JSONL streaming, no SSE):
+- Custom JSONL stream parser in `provider/ollama/stream.go`
+- No auth header (RunPod uses pod ID in URL)
+- Streaming format: one JSON object per line (not `data: ` prefixed SSE)
+- Tool calls arrive in the final message (not streamed as deltas)
+- Temperature/max_tokens via `options` object (`num_predict` = max_tokens)
+- Images via `images` array (base64 strings, no data URI prefix)
+- Documents fallback to text for text MIME types, placeholder for binary
+- Implements `HealthChecker` via `/api/tags` endpoint
+
 All providers propagate `Request.Metadata` as HTTP headers for trace context propagation.
 
 ### Input Validation (internal/jsonschema)
@@ -378,6 +388,7 @@ agentflow/
     provider/gemini/         # Google Gemini generateContent (custom SSE parser)
     provider/groq/           # Groq API (uses internal/sse, OpenAI-compatible)
     provider/openrouter/     # OpenRouter API (uses internal/sse, OpenAI-compatible)
+    provider/ollama/         # Ollama/RunPod API (JSONL streaming, HealthChecker)
     provider/fallback/       # Cascading multi-provider failover
     provider/mock/           # Deterministic mock for testing
 
@@ -487,7 +498,8 @@ agentflow/
 | `middleware/circuitbreaker_test.go` | middleware | Circuit breaker, timeout, retry |
 | `provider/openai/openai_test.go` | openai | Mock HTTP: text, tool call, error, timeout, metadata |
 | `provider/anthropic/anthropic_test.go` | anthropic | Mock HTTP: text, tool call, error |
-| `provider/gemini/gemini_test.go` | gemini | Mock HTTP: text, tool call, error |
+| `provider/gemini/gemini_test.go` | gemini | Mock HTTP: text, tool call, document, error |
+| `provider/ollama/ollama_test.go` | ollama | Mock JSONL: text, tool call, multi-tool, usage, document fallback, health check |
 | `provider/fallback/fallback_test.go` | fallback | Cascading failover logic |
 | `internal/jsonschema/validate_test.go` | jsonschema | Schema validation: types, required, enum, nested |
 

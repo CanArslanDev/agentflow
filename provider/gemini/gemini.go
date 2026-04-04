@@ -229,6 +229,16 @@ func (p *Provider) convertMessages(messages []agentflow.Message) []geminiContent
 						InlineData: &inlineData{MimeType: mt, Data: b.Image.Data},
 					})
 				}
+			case agentflow.ContentDocument:
+				if b.Document != nil && b.Document.Data != "" {
+					mt := b.Document.MediaType
+					if mt == "" {
+						mt = "application/octet-stream"
+					}
+					parts = append(parts, geminiPart{
+						InlineData: &inlineData{MimeType: mt, Data: b.Document.Data},
+					})
+				}
 			case agentflow.ContentToolCall:
 				if b.ToolCall != nil {
 					var args map[string]any

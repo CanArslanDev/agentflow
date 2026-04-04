@@ -23,7 +23,7 @@ type contentBlock struct {
 	Text string `json:"text,omitempty"`
 
 	// type: "image"
-	Source *imageSource `json:"source,omitempty"`
+	Source *mediaSource `json:"source,omitempty"`
 
 	// type: "tool_use"
 	ID    string `json:"id,omitempty"`
@@ -36,7 +36,7 @@ type contentBlock struct {
 	IsError   bool   `json:"is_error,omitempty"`
 }
 
-type imageSource struct {
+type mediaSource struct {
 	Type      string `json:"type"`       // "base64"
 	MediaType string `json:"media_type"` // "image/png", etc.
 	Data      string `json:"data"`       // base64 encoded

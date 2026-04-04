@@ -171,6 +171,63 @@ func TestOpenAI_ModelID(t *testing.T) {
 	}
 }
 
+func TestOpenAI_DocumentMessage(t *testing.T) {
+	var receivedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}]}\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := openai.New("test-key", "gpt-4o", openai.WithBaseURL(server.URL))
+
+	msg := agentflow.NewDocumentMessage("Summarize this",
+		agentflow.DocumentContent{
+			Filename:  "report.pdf",
+			MediaType: "application/pdf",
+			Data:      "JVBERi0xLjQ=",
+		},
+	)
+
+	stream, err := provider.CreateStream(context.Background(), &agentflow.Request{
+		Messages: []agentflow.Message{msg},
+	})
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	defer stream.Close()
+	// Drain stream.
+	for {
+		_, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+	}
+
+	bodyStr := string(receivedBody)
+	// Verify the request body contains file content part.
+	if !containsSubstr(bodyStr, `"type":"file"`) {
+		t.Errorf("request body should contain file type, got: %s", bodyStr)
+	}
+	if !containsSubstr(bodyStr, `"filename":"report.pdf"`) {
+		t.Errorf("request body should contain filename, got: %s", bodyStr)
+	}
+	if !containsSubstr(bodyStr, `data:application/pdf;base64,JVBERi0xLjQ=`) {
+		t.Errorf("request body should contain file_data as data URI, got: %s", bodyStr)
+	}
+}
+
+func containsSubstr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func TestOpenAI_MetadataPropagation(t *testing.T) {
 	var receivedHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

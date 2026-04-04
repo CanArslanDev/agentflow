@@ -267,3 +267,28 @@ agentflow/
 - Integration tests should use `context.WithTimeout` to prevent hangs
 - When running all integration tests together, rate limits may cause failures -- run them sequentially with pauses if needed
 - Test names: `TestFeature_Scenario` for units, `TestIntegration_Feature` for integration
+
+## Post-Change Testing Workflow
+
+After every code change, you MUST follow this workflow:
+
+1. **Run `go build ./...` and `go vet ./...`** to verify the code compiles and passes static analysis.
+
+2. **Run existing unit tests** with `go test ./... -run "Test[^I]" -timeout 60s` to catch regressions.
+
+3. **Run or write integration tests for the changed code:**
+   - If an integration test already exists for the changed functionality, run it.
+   - If no integration test exists, write one following the `TestIntegration_` naming convention with `t.Skip` guard for `GROQ_API_KEY`.
+   - Integration tests must use `context.WithTimeout` and the mock provider for unit-level verification where possible.
+
+4. **Ask the user for a Groq API key** to run live integration tests. Do not skip this step. Prompt the user explicitly:
+   > "Integration testlerini canli olarak calistirmak icin bir Groq API key'e ihtiyacim var. Paylasir misiniz?"
+
+5. **Run live integration tests** with the provided key:
+   ```bash
+   GROQ_API_KEY=<key> go test ./... -run "TestIntegration_" -timeout 180s -v
+   ```
+   - If rate limiting causes failures, re-run failing tests individually.
+   - Report which tests passed and which failed with root cause analysis.
+
+6. **Never commit code that fails `go build` or `go vet`.**

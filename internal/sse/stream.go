@@ -24,7 +24,10 @@ type Stream struct {
 	// Think tag parser for content field (<think>...</think> inline tags).
 	thinkParser thinkTagParser
 
-	// Think tag stripper for reasoning field (strips tags from native thinking).
+	// Strips model-internal tags from thinking content (<tool>, <output>).
+	thinkingStripper thinkTagStripper
+
+	// Strips model-internal tags from reasoning field (<think>, <tool>, <output>).
 	reasoningStripper thinkTagStripper
 
 	// Pending events from a single chunk that produced multiple segments.
@@ -131,9 +134,14 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 					continue
 				}
 				if seg.thinking {
+					// Strip model-internal tags (<tool>, <output>) from thinking content.
+					cleaned := s.thinkingStripper.strip(seg.text)
+					if cleaned == "" {
+						continue
+					}
 					events = append(events, agentflow.StreamEvent{
 						Type:          agentflow.StreamEventThinkingDelta,
-						ThinkingDelta: &agentflow.ContentDelta{Text: seg.text},
+						ThinkingDelta: &agentflow.ContentDelta{Text: cleaned},
 					})
 				} else {
 					events = append(events, agentflow.StreamEvent{
@@ -205,14 +213,23 @@ func (s *Stream) Usage() *agentflow.Usage {
 	return s.usage
 }
 
-// thinkTagStripper removes <think> and </think> tags from streaming text,
-// handling tags split across chunk boundaries. Used for the reasoning field
-// where content is already classified as thinking but may contain raw tags.
+// reasoningTagStripper is the list of tags to strip from reasoning field content.
+// These are model-internal formatting tags that should not reach the client.
+var reasoningStripTags = []string{
+	"<think>", "</think>",
+	"<tool>", "</tool>",
+	"<output>", "</output>",
+}
+
+// thinkTagStripper removes model-internal tags (<think>, <tool>, <output> and
+// their closing counterparts) from streaming text, handling tags split across
+// chunk boundaries. Used for the reasoning field where content is already
+// classified as thinking but may contain raw formatting tags.
 type thinkTagStripper struct {
 	tagBuf string
 }
 
-// strip removes <think> and </think> tags from text, returning the cleaned text.
+// strip removes model-internal tags from text, returning the cleaned text.
 func (s *thinkTagStripper) strip(text string) string {
 	if s.tagBuf != "" {
 		text = s.tagBuf + text
@@ -221,34 +238,47 @@ func (s *thinkTagStripper) strip(text string) string {
 
 	var result strings.Builder
 	for len(text) > 0 {
-		// Check for <think> tag.
-		if idx := strings.Index(text, "<think>"); idx >= 0 {
-			result.WriteString(text[:idx])
-			text = text[idx+len("<think>"):]
+		// Find the earliest tag match.
+		bestIdx := -1
+		bestTag := ""
+		for _, tag := range reasoningStripTags {
+			if idx := strings.Index(text, tag); idx >= 0 {
+				if bestIdx < 0 || idx < bestIdx {
+					bestIdx = idx
+					bestTag = tag
+				}
+			}
+		}
+		if bestIdx >= 0 {
+			result.WriteString(text[:bestIdx])
+			text = text[bestIdx+len(bestTag):]
 			continue
 		}
-		// Check for </think> tag.
-		if idx := strings.Index(text, "</think>"); idx >= 0 {
-			result.WriteString(text[:idx])
-			text = text[idx+len("</think>"):]
-			continue
-		}
-		// Check for partial tag at end.
-		if partial := matchPartialSuffix(text, "<think>"); partial > 0 {
+
+		// Check for partial tag at end (any of the strip tags).
+		if partial := matchPartialSuffixAny(text, reasoningStripTags); partial > 0 {
 			result.WriteString(text[:len(text)-partial])
 			s.tagBuf = text[len(text)-partial:]
 			return result.String()
 		}
-		if partial := matchPartialSuffix(text, "</think>"); partial > 0 {
-			result.WriteString(text[:len(text)-partial])
-			s.tagBuf = text[len(text)-partial:]
-			return result.String()
-		}
+
 		// No tags found.
 		result.WriteString(text)
 		break
 	}
 	return result.String()
+}
+
+// matchPartialSuffixAny checks if the end of text matches a prefix of any tag.
+// Returns the longest partial match length.
+func matchPartialSuffixAny(text string, tags []string) int {
+	best := 0
+	for _, tag := range tags {
+		if n := matchPartialSuffix(text, tag); n > best {
+			best = n
+		}
+	}
+	return best
 }
 
 // --- Think tag parser ---

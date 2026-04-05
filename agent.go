@@ -350,19 +350,26 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 		}
 
 		// Build and send the model request.
-		// Tools are NEVER sent in Request.Tools. All tool execution is
-		// text-based: tool descriptions are injected into the system prompt
-		// and the model writes [TOOL_CALL: tool_name("args")] in its response.
+		// Native-first tool calling: send tools via Request.Tools (API-level).
+		// If the provider returns a 400 error (model doesn't support tool calling),
+		// fall back to text-based tool calling for the rest of this run.
 		sysPrompt := a.config.SystemPrompt
 		toolDefs := a.toolDefinitions()
-		if len(toolDefs) > 0 {
-			sysPrompt += a.buildToolInstruction()
+		var reqTools []ToolDefinition
+
+		if state.textToolFallback {
+			// Provider rejected native tools in a previous turn — use text-based.
+			if len(toolDefs) > 0 {
+				sysPrompt += a.buildToolInstruction()
+			}
+		} else {
+			reqTools = toolDefs
 		}
 
 		req := &Request{
 			Messages:      state.messages,
 			SystemPrompt:  sysPrompt,
-			Tools:         nil, // Never send tools to provider.
+			Tools:         reqTools,
 			MaxTokens:     a.config.MaxTokens,
 			Temperature:   a.config.Temperature,
 			StopSequences: nil,
@@ -385,11 +392,24 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 		a.logInfo("model call starting",
 			slog.Int("turn", state.turnCount),
 			slog.Int("messages", len(state.messages)),
-			slog.Int("tools", len(toolDefs)),
+			slog.Int("tools", len(req.Tools)),
+			slog.Bool("text_tool_fallback", state.textToolFallback),
 		)
 
 		stream, err := a.createStreamWithRetry(ctx, req, events)
 		if err != nil {
+			// Check if this is a "tool calling not supported" error.
+			// If so, fall back to text-based tool calling and retry this turn.
+			if !state.textToolFallback && len(reqTools) > 0 && isToolCallingUnsupportedError(err) {
+				a.logWarn("native tool calling rejected, falling back to text-based",
+					slog.Int("turn", state.turnCount),
+					slog.String("error", err.Error()),
+				)
+				state.textToolFallback = true
+				state.turnCount-- // Don't count this failed attempt as a turn.
+				continue          // Retry the same turn with text-based tools.
+			}
+
 			a.logError("model call failed", slog.Int("turn", state.turnCount), slog.String("error", err.Error()))
 			a.emit(events, Event{
 				Type:  EventError,
@@ -1149,6 +1169,16 @@ func (a *Agent) logError(msg string, args ...any) {
 // textToolCallRegex matches [TOOL_CALL: tool_name("arguments")] or [TOOL_CALL: tool_name(arguments)].
 var textToolCallRegex = regexp.MustCompile(`\[TOOL_CALL:\s*(\w+)\(([^)]*)\)\]`)
 
+// isToolCallingUnsupportedError checks if an error indicates that the model
+// does not support native API-level tool calling. This triggers fallback to
+// text-based tool calling for the remainder of the run.
+func isToolCallingUnsupportedError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "tool calling") && (strings.Contains(msg, "not supported") || strings.Contains(msg, "is not supported")) ||
+		strings.Contains(msg, "tools") && strings.Contains(msg, "not supported") ||
+		strings.Contains(msg, "function calling") && strings.Contains(msg, "not supported")
+}
+
 // deduplicateToolCalls removes tool calls that have already been executed in this run
 // (same tool name + same input). This prevents models from entering infinite tool loops
 // where they repeatedly call the same tool with the same arguments.
@@ -1278,6 +1308,11 @@ type loopState struct {
 
 	// Track executed tool calls for deduplication (tool_name + input).
 	executedToolCalls map[string]bool
+
+	// Text tool calling fallback: set to true when native tool calling
+	// returns a 400 error (model doesn't support it). Once set, all
+	// subsequent turns in this run use text-based tool calling.
+	textToolFallback bool
 }
 
 // toolBatch groups tool calls by their concurrency safety.

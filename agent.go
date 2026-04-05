@@ -475,9 +475,20 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			Metadata:  state.metadata,
 		}, state)
 
-		// Text-based tool calling: detect [TOOL_CALL: ...] in assistant text.
+		// Text-based tool calling: detect [TOOL_CALL: ...] in assistant text and thinking content.
+		// Models may write tool calls inside <think> blocks (native thinking) or during
+		// agentic thinking turns. We check thinking content first (since it may contain
+		// tool calls not present in the text content), then fall back to text content.
 		if len(a.tools) > 0 && len(toolCalls) == 0 {
-			textToolCalls := a.parseTextToolCalls(assistantMsg.TextContent())
+			var textToolCalls []ToolCall
+			// First check thinking content (native thinking or agentic thinking turn).
+			if state.lastThinkContent != "" {
+				textToolCalls = a.parseTextToolCalls(state.lastThinkContent)
+			}
+			// If no tool calls found in thinking, check text content.
+			if len(textToolCalls) == 0 {
+				textToolCalls = a.parseTextToolCalls(assistantMsg.TextContent())
+			}
 			if len(textToolCalls) > 0 {
 				results := a.executeTools(ctx, textToolCalls, state, events)
 				// Build tool result as a system message (model doesn't expect tool_result format).
@@ -587,9 +598,10 @@ func (a *Agent) consumeStreamWithExecutor(ctx context.Context, stream Stream, ev
 // thinking: when state.isThinkingTurn is true, text deltas are emitted as
 // EventThinkingDelta instead of EventTextDelta.
 func (a *Agent) consumeStream(ctx context.Context, stream Stream, events chan<- Event, state *loopState) (Message, []ToolCall, error) {
-	var textParts []string
-	var toolCalls []ToolCall
-	var blocks []ContentBlock
+	var textParts    []string
+	var thinkParts   []string
+	var toolCalls    []ToolCall
+	var blocks       []ContentBlock
 
 	for {
 		if ctx.Err() != nil {
@@ -613,6 +625,7 @@ func (a *Agent) consumeStream(ctx context.Context, stream Stream, events chan<- 
 						Type:       EventThinkingDelta,
 						ThinkDelta: &TextDeltaEvent{Text: ev.Delta.Text},
 					})
+					thinkParts = append(thinkParts, ev.Delta.Text)
 				} else {
 					a.emit(events, Event{
 						Type:      EventTextDelta,
@@ -633,6 +646,7 @@ func (a *Agent) consumeStream(ctx context.Context, stream Stream, events chan<- 
 					Type:       EventThinkingDelta,
 					ThinkDelta: &TextDeltaEvent{Text: ev.ThinkingDelta.Text},
 				})
+				thinkParts = append(thinkParts, ev.ThinkingDelta.Text)
 			}
 
 		case StreamEventToolCall:
@@ -657,6 +671,17 @@ func (a *Agent) consumeStream(ctx context.Context, stream Stream, events chan<- 
 		}
 		textBlock := ContentBlock{Type: ContentText, Text: fullText}
 		blocks = append([]ContentBlock{textBlock}, blocks...)
+	}
+
+	// Store thinking content in state for text tool call detection.
+	if state != nil && len(thinkParts) > 0 {
+		var sb strings.Builder
+		for _, p := range thinkParts {
+			sb.WriteString(p)
+		}
+		state.lastThinkContent = sb.String()
+	} else if state != nil {
+		state.lastThinkContent = ""
 	}
 
 	msg := Message{Role: RoleAssistant, Content: blocks}
@@ -1199,6 +1224,9 @@ type loopState struct {
 	thinkingCompleted  bool // true after the thinking turn has finished
 	nativeThinkingSeen bool // true if provider emitted StreamEventThinkingDelta
 
+	// Last turn's thinking content for text tool call detection.
+	// When [TOOL_CALL: ...] appears inside thinking, we need to parse it.
+	lastThinkContent string
 }
 
 // toolBatch groups tool calls by their concurrency safety.

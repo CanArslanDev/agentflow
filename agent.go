@@ -490,6 +490,10 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 				textToolCalls = a.parseTextToolCalls(assistantMsg.TextContent())
 			}
 			if len(textToolCalls) > 0 {
+				// Strip [TOOL_CALL: ...] patterns from the assistant message in history
+				// so the model doesn't see them in the next turn and repeat them.
+				a.stripToolCallsFromLastMessage(state)
+
 				results := a.executeTools(ctx, textToolCalls, state, events)
 				// Build tool result as a system message (model doesn't expect tool_result format).
 				var resultParts []string
@@ -1141,6 +1145,24 @@ func (a *Agent) logError(msg string, args ...any) {
 
 // textToolCallRegex matches [TOOL_CALL: tool_name("arguments")] or [TOOL_CALL: tool_name(arguments)].
 var textToolCallRegex = regexp.MustCompile(`\[TOOL_CALL:\s*(\w+)\(([^)]*)\)\]`)
+
+// stripToolCallsFromLastMessage removes [TOOL_CALL: ...] patterns from the last
+// assistant message in state.messages. This prevents the model from seeing raw
+// tool call syntax in the conversation history and repeating it in the next turn.
+func (a *Agent) stripToolCallsFromLastMessage(state *loopState) {
+	for i := len(state.messages) - 1; i >= 0; i-- {
+		if state.messages[i].Role == RoleAssistant {
+			for j := range state.messages[i].Content {
+				if state.messages[i].Content[j].Type == ContentText {
+					cleaned := textToolCallRegex.ReplaceAllString(state.messages[i].Content[j].Text, "")
+					cleaned = strings.TrimSpace(cleaned)
+					state.messages[i].Content[j].Text = cleaned
+				}
+			}
+			break
+		}
+	}
+}
 
 // buildToolInstruction generates a system prompt fragment describing available
 // tools and the expected [TOOL_CALL: ...] format for text-based tool calling.

@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/CanArslanDev/agentflow"
 )
 
-// WebSearch returns a tool that searches the web using DuckDuckGo's HTML API.
+// WebSearch returns a tool that searches the web and fetches actual page content.
+// For each search result, it fetches the URL and extracts readable text, giving
+// the model real website content instead of just snippets.
 // Remote-safe — performs only network calls, no local filesystem access.
 func WebSearch() agentflow.Tool { return &webSearchTool{} }
 
@@ -21,7 +24,7 @@ type webSearchTool struct{}
 
 func (t *webSearchTool) Name() string { return "web_search" }
 func (t *webSearchTool) Description() string {
-	return "Search the web for current information using a search query. Returns a list of relevant results with titles, URLs, and snippets. Use this when you need up-to-date information."
+	return "Search the web and fetch actual page content. Returns search results with real website text, not just snippets. Use this when you need up-to-date information, facts, or current events."
 }
 func (t *webSearchTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -39,6 +42,13 @@ func (t *webSearchTool) InputSchema() map[string]any {
 		"required": []string{"query"},
 	}
 }
+
+const (
+	searchTimeout       = 10 * time.Second
+	contentFetchTimeout = 7 * time.Second
+	maxContentPerPage   = 3000 // chars per page
+	maxConcurrentFetch  = 5
+)
 
 func (t *webSearchTool) Execute(ctx context.Context, input json.RawMessage, progress agentflow.ProgressFunc) (*agentflow.ToolResult, error) {
 	var params struct {
@@ -65,6 +75,7 @@ func (t *webSearchTool) Execute(ctx context.Context, input json.RawMessage, prog
 		progress(agentflow.ProgressEvent{Message: "Searching: " + params.Query})
 	}
 
+	// Step 1: DuckDuckGo search for URLs.
 	results, err := duckDuckGoSearch(ctx, params.Query, maxResults)
 	if err != nil {
 		return &agentflow.ToolResult{Content: "search failed: " + err.Error(), IsError: true}, nil
@@ -74,21 +85,113 @@ func (t *webSearchTool) Execute(ctx context.Context, input json.RawMessage, prog
 		return &agentflow.ToolResult{Content: "no results found for: " + params.Query}, nil
 	}
 
+	if progress != nil {
+		progress(agentflow.ProgressEvent{Message: fmt.Sprintf("Found %d results, fetching content...", len(results))})
+	}
+
+	// Step 2: Fetch actual page content for each result (parallel, with timeout).
+	contentMap := fetchPageContents(ctx, results)
+
+	// Step 3: Format results with content.
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Search results for \"%s\":\n\n", params.Query))
 	for i, r := range results {
-		sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n   %s\n\n", i+1, r.title, r.url, r.snippet))
+		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, r.title))
+		sb.WriteString(fmt.Sprintf("   URL: %s\n", r.url))
+		if r.snippet != "" {
+			sb.WriteString(fmt.Sprintf("   Description: %s\n", r.snippet))
+		}
+		if content, ok := contentMap[r.url]; ok && content != "" {
+			sb.WriteString(fmt.Sprintf("   Content: %s\n", content))
+		}
+		sb.WriteString("\n")
 	}
 
 	return &agentflow.ToolResult{
 		Content:  sb.String(),
-		Metadata: map[string]any{"result_count": len(results)},
+		Metadata: map[string]any{"result_count": len(results), "query": params.Query},
 	}, nil
 }
 
 func (t *webSearchTool) IsConcurrencySafe(_ json.RawMessage) bool { return true }
 func (t *webSearchTool) IsReadOnly(_ json.RawMessage) bool        { return true }
 func (t *webSearchTool) Locality() agentflow.ToolLocality          { return agentflow.ToolRemoteSafe }
+
+// --- Page content fetching ---
+
+// fetchPageContents fetches the readable text content of each search result URL
+// concurrently. Returns a map of URL -> extracted text content.
+func fetchPageContents(ctx context.Context, results []searchResult) map[string]string {
+	contentMap := make(map[string]string)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	sem := make(chan struct{}, maxConcurrentFetch)
+
+	for _, r := range results {
+		resultURL := r.url
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			content := fetchSinglePage(ctx, resultURL)
+			if content != "" {
+				mu.Lock()
+				contentMap[resultURL] = content
+				mu.Unlock()
+			}
+		}()
+	}
+
+	wg.Wait()
+	return contentMap
+}
+
+// fetchSinglePage fetches a URL and extracts readable text content.
+func fetchSinglePage(ctx context.Context, pageURL string) string {
+	reqCtx, cancel := context.WithTimeout(ctx, contentFetchTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; agentflow/1.0)")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,text/plain,*/*")
+
+	client := &http.Client{
+		Timeout: contentFetchTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 3 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return ""
+	}
+
+	text := extractReadableText(string(body))
+	if len(text) > maxContentPerPage {
+		text = text[:maxContentPerPage] + "..."
+	}
+	return text
+}
 
 // --- DuckDuckGo HTML search ---
 
@@ -112,7 +215,7 @@ func duckDuckGoSearch(ctx context.Context, query string, maxResults int) ([]sear
 			}
 		}
 
-		reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		reqCtx, cancel := context.WithTimeout(ctx, searchTimeout)
 		req, err := http.NewRequestWithContext(reqCtx, "GET", searchURL, nil)
 		if err != nil {
 			cancel()
@@ -151,21 +254,17 @@ func duckDuckGoSearch(ctx context.Context, query string, maxResults int) ([]sear
 }
 
 // parseSearchResults extracts results from DuckDuckGo HTML response.
-// Simple, robust parsing without external HTML parser dependency.
 func parseSearchResults(html string, maxResults int) []searchResult {
 	var results []searchResult
 
-	// DuckDuckGo HTML results are in <a class="result__a"> tags.
 	remaining := html
 	for len(results) < maxResults {
-		// Find result link.
 		idx := strings.Index(remaining, "class=\"result__a\"")
 		if idx == -1 {
 			break
 		}
 		remaining = remaining[idx:]
 
-		// Extract href.
 		hrefStart := strings.Index(remaining, "href=\"")
 		if hrefStart == -1 {
 			break
@@ -178,10 +277,8 @@ func parseSearchResults(html string, maxResults int) []searchResult {
 		rawURL := remaining[:hrefEnd]
 		remaining = remaining[hrefEnd:]
 
-		// Decode DuckDuckGo redirect URL.
 		resultURL := decodeDDGURL(rawURL)
 
-		// Extract title (text between > and </a>).
 		titleStart := strings.Index(remaining, ">")
 		if titleStart == -1 {
 			break
@@ -194,10 +291,9 @@ func parseSearchResults(html string, maxResults int) []searchResult {
 		title := stripHTML(remaining[:titleEnd])
 		remaining = remaining[titleEnd:]
 
-		// Extract snippet from result__snippet class.
 		snippet := ""
 		snippetIdx := strings.Index(remaining, "class=\"result__snippet\"")
-		if snippetIdx != -1 && snippetIdx < 2000 { // within reasonable distance
+		if snippetIdx != -1 && snippetIdx < 2000 {
 			snippetHTML := remaining[snippetIdx:]
 			snipStart := strings.Index(snippetHTML, ">")
 			if snipStart != -1 {
@@ -221,9 +317,7 @@ func parseSearchResults(html string, maxResults int) []searchResult {
 	return results
 }
 
-// decodeDDGURL extracts the real URL from DuckDuckGo's redirect wrapper.
 func decodeDDGURL(raw string) string {
-	// DDG wraps URLs like: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&...
 	if strings.Contains(raw, "uddg=") {
 		parts := strings.SplitN(raw, "uddg=", 2)
 		if len(parts) == 2 {
@@ -238,14 +332,12 @@ func decodeDDGURL(raw string) string {
 			}
 		}
 	}
-	// Direct URL.
 	if strings.HasPrefix(raw, "http") {
 		return raw
 	}
 	return ""
 }
 
-// stripHTML removes HTML tags from a string.
 func stripHTML(s string) string {
 	var result strings.Builder
 	inTag := false

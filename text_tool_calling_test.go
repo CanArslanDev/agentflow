@@ -50,7 +50,7 @@ func TestTextToolCalling_Basic(t *testing.T) {
 	)
 
 	agent := agentflow.NewAgent(provider,
-		agentflow.WithTextToolCalling(),
+
 		agentflow.WithTool(makeSearchTool()),
 		agentflow.WithMaxTurns(5),
 	)
@@ -98,7 +98,7 @@ func TestTextToolCalling_NoToolCall(t *testing.T) {
 	)
 
 	agent := agentflow.NewAgent(provider,
-		agentflow.WithTextToolCalling(),
+
 		agentflow.WithTool(makeSearchTool()),
 		agentflow.WithMaxTurns(5),
 	)
@@ -137,7 +137,7 @@ func TestTextToolCalling_UnknownTool(t *testing.T) {
 	)
 
 	agent := agentflow.NewAgent(provider,
-		agentflow.WithTextToolCalling(),
+
 		agentflow.WithTool(makeSearchTool()),
 		agentflow.WithMaxTurns(2),
 	)
@@ -174,7 +174,7 @@ func TestTextToolCalling_WithThinking(t *testing.T) {
 	)
 
 	agent := agentflow.NewAgent(provider,
-		agentflow.WithTextToolCalling(),
+
 		agentflow.WithThinkingPrompt("Think step by step.", "Give final answer."),
 		agentflow.WithTool(makeSearchTool()),
 		agentflow.WithMaxTurns(10),
@@ -236,7 +236,7 @@ func TestTextToolCalling_MultipleToolCalls(t *testing.T) {
 	)
 
 	agent := agentflow.NewAgent(provider,
-		agentflow.WithTextToolCalling(),
+
 		agentflow.WithTools(searchTool, calcTool),
 		agentflow.WithMaxTurns(5),
 	)
@@ -272,7 +272,7 @@ func TestTextToolCalling_SystemPromptInjection(t *testing.T) {
 	// Use OnEvent to verify system prompt contains tool instructions.
 	var systemPrompt string
 	agent := agentflow.NewAgent(provider,
-		agentflow.WithTextToolCalling(),
+
 		agentflow.WithTool(makeSearchTool()),
 		agentflow.WithSystemPrompt("You are helpful."),
 		agentflow.WithMaxTurns(1),
@@ -291,15 +291,14 @@ func TestTextToolCalling_SystemPromptInjection(t *testing.T) {
 	// Just verify no crash and tools work - the real test is the live integration.
 }
 
-func TestTextToolCalling_Disabled(t *testing.T) {
-	// Without WithTextToolCalling, tools should be sent in Request.Tools (native).
+func TestTextToolCalling_NoToolsRegistered(t *testing.T) {
+	// Without tools, no tool instructions should be in system prompt.
 	provider := mock.New(
 		mock.WithResponse(mock.TextDelta("Hello")),
 	)
 
 	agent := agentflow.NewAgent(provider,
-		// NO WithTextToolCalling() -- native mode
-		agentflow.WithTool(makeSearchTool()),
+		// No tools registered.
 		agentflow.WithMaxTurns(1),
 	)
 
@@ -329,7 +328,7 @@ func TestIntegration_TextToolCalling(t *testing.T) {
 	provider := groqprovider.New(key, "compound-beta")
 
 	agent := agentflow.NewAgent(provider,
-		agentflow.WithTextToolCalling(),
+
 		agentflow.WithTool(makeSearchTool()),
 		agentflow.WithMaxTurns(5),
 		agentflow.WithMaxTokens(500),

@@ -86,17 +86,6 @@ type Config struct {
 	// logging (zero overhead). Use log/slog for structured output.
 	Logger *slog.Logger
 
-	// TextToolCalling enables text-based tool calling for models that do not
-	// support native API-level tool calling (e.g., Groq Compound, older Llama).
-	// When enabled:
-	//   - Tool definitions are NOT sent in Request.Tools (avoids 400 errors)
-	//   - Tool descriptions are injected into the system prompt
-	//   - Model writes [TOOL_CALL: tool_name("args")] in its text response
-	//   - AgentFlow parses these patterns and executes the tools
-	//   - Tool results are injected as system messages and the loop continues
-	// Default: false (native API-level tool calling is used).
-	TextToolCalling bool
-
 	// ThinkingPrompt enables agentic thinking for non-native thinking models.
 	// When set, the first turn's text output is emitted as EventThinkingDelta
 	// instead of EventTextDelta. After the thinking turn completes, AnswerPrompt
@@ -349,24 +338,6 @@ func WithRateLimiter(limiter RateLimiter) Option {
 func WithLogger(logger *slog.Logger) Option {
 	return func(a *Agent) {
 		a.config.Logger = logger
-	}
-}
-
-// WithTextToolCalling enables text-based tool calling for models without native
-// tool calling support. Tool descriptions are injected into the system prompt
-// and the model uses [TOOL_CALL: tool_name("args")] format in its response.
-// AgentFlow parses these patterns and executes the tools automatically.
-//
-// Use this for models that return "400: tool calling is not supported" errors.
-// For models with native tool calling (GPT-4, Claude, Gemini), leave this off.
-//
-//	agent := agentflow.NewAgent(provider,
-//	    agentflow.WithTextToolCalling(),
-//	    agentflow.WithTools(builtin.Remote()...),
-//	)
-func WithTextToolCalling() Option {
-	return func(a *Agent) {
-		a.config.TextToolCalling = true
 	}
 }
 

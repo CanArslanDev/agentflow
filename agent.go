@@ -350,23 +350,19 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 		}
 
 		// Build and send the model request.
-		toolDefs := a.toolDefinitions()
+		// Tools are NEVER sent in Request.Tools. All tool execution is
+		// text-based: tool descriptions are injected into the system prompt
+		// and the model writes [TOOL_CALL: tool_name("args")] in its response.
 		sysPrompt := a.config.SystemPrompt
-		var reqTools []ToolDefinition
-
-		if a.config.TextToolCalling && len(toolDefs) > 0 {
-			// Text-based tool calling: inject tool instructions into system
-			// prompt instead of sending Request.Tools (which would cause 400
-			// errors on models without native tool calling support).
+		toolDefs := a.toolDefinitions()
+		if len(toolDefs) > 0 {
 			sysPrompt += a.buildToolInstruction()
-		} else {
-			reqTools = toolDefs
 		}
 
 		req := &Request{
 			Messages:      state.messages,
 			SystemPrompt:  sysPrompt,
-			Tools:         reqTools,
+			Tools:         nil, // Never send tools to provider.
 			MaxTokens:     a.config.MaxTokens,
 			Temperature:   a.config.Temperature,
 			StopSequences: nil,
@@ -389,7 +385,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 		a.logInfo("model call starting",
 			slog.Int("turn", state.turnCount),
 			slog.Int("messages", len(state.messages)),
-			slog.Int("tools", len(req.Tools)),
+			slog.Int("tools", len(toolDefs)),
 		)
 
 		stream, err := a.createStreamWithRetry(ctx, req, events)
@@ -480,7 +476,7 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 		}, state)
 
 		// Text-based tool calling: detect [TOOL_CALL: ...] in assistant text.
-		if a.config.TextToolCalling && len(toolCalls) == 0 {
+		if len(a.tools) > 0 && len(toolCalls) == 0 {
 			textToolCalls := a.parseTextToolCalls(assistantMsg.TextContent())
 			if len(textToolCalls) > 0 {
 				results := a.executeTools(ctx, textToolCalls, state, events)
@@ -1202,6 +1198,7 @@ type loopState struct {
 	isThinkingTurn     bool // true when current turn should emit ThinkingDelta
 	thinkingCompleted  bool // true after the thinking turn has finished
 	nativeThinkingSeen bool // true if provider emitted StreamEventThinkingDelta
+
 }
 
 // toolBatch groups tool calls by their concurrency safety.

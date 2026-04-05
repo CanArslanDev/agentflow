@@ -25,6 +25,11 @@ type Stream struct {
 	// Think tag parser for content field (<think>...</think> inline tags).
 	thinkParser thinkTagParser
 
+	// Reasoning buffer: accumulates reasoning field chunks so that
+	// model-internal tags (<tool>, </tool>, <output>, </output>) can be
+	// stripped even when split across chunk boundaries.
+	reasoningBuf strings.Builder
+
 	// Pending events from a single chunk that produced multiple segments.
 	pending []agentflow.StreamEvent
 }
@@ -55,6 +60,13 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 		}
 
 		if !s.scanner.Scan() {
+			// Flush remaining reasoning buffer at stream end.
+			if s.reasoningBuf.Len() > 0 {
+				if ev := s.flushReasoningBuf(); ev != nil {
+					s.done = true
+					return *ev, nil
+				}
+			}
 			if events := s.flushToolCalls(); len(events) > 0 {
 				s.done = true
 				return events[0], nil
@@ -77,6 +89,13 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 		data := strings.TrimPrefix(line, "data: ")
 
 		if data == "[DONE]" {
+			// Flush any remaining reasoning buffer.
+			if s.reasoningBuf.Len() > 0 {
+				if ev := s.flushReasoningBuf(); ev != nil {
+					s.done = true
+					return *ev, nil
+				}
+			}
 			if events := s.flushToolCalls(); len(events) > 0 {
 				s.done = true
 				return events[0], nil
@@ -113,35 +132,31 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 		}
 
 		if choice.Delta.Reasoning != nil && *choice.Delta.Reasoning != "" {
-			text := stripReasoningTags(*choice.Delta.Reasoning)
-			if text != "" {
-				return agentflow.StreamEvent{
-					Type:          agentflow.StreamEventThinkingDelta,
-					ThinkingDelta: &agentflow.ContentDelta{Text: text},
-				}, nil
+			// Buffer reasoning chunks so tags split across boundaries
+			// (e.g. "<" + "tool" + ">") can be stripped as complete strings.
+			s.reasoningBuf.WriteString(*choice.Delta.Reasoning)
+
+			// Flush on newline boundaries -- gives enough context for tag stripping
+			// while keeping latency low.
+			if strings.ContainsRune(*choice.Delta.Reasoning, '\n') {
+				if ev := s.flushReasoningBuf(); ev != nil {
+					return *ev, nil
+				}
 			}
 			continue
 		}
 
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-			segments := s.thinkParser.process(*choice.Delta.Content)
-			events := make([]agentflow.StreamEvent, 0, len(segments))
-			for _, seg := range segments {
-				if seg.text == "" {
-					continue
-				}
-				if seg.thinking {
-					events = append(events, agentflow.StreamEvent{
-						Type:          agentflow.StreamEventThinkingDelta,
-						ThinkingDelta: &agentflow.ContentDelta{Text: seg.text},
-					})
-				} else {
-					events = append(events, agentflow.StreamEvent{
-						Type:  agentflow.StreamEventDelta,
-						Delta: &agentflow.ContentDelta{Text: seg.text},
-					})
+			// Flush any remaining reasoning buffer before processing content.
+			if s.reasoningBuf.Len() > 0 {
+				if ev := s.flushReasoningBuf(); ev != nil {
+					// Queue the content delta for next iteration.
+					s.pending = append(s.pending, s.buildContentEvents(*choice.Delta.Content)...)
+					return *ev, nil
 				}
 			}
+
+			events := s.buildContentEvents(*choice.Delta.Content)
 			if len(events) == 0 {
 				continue
 			}
@@ -214,6 +229,48 @@ func (s *Stream) flushToolCalls() []agentflow.StreamEvent {
 		})
 	}
 	s.toolCalls = make(map[int]*ToolCallAccumulator)
+	return events
+}
+
+// flushReasoningBuf strips model-internal tags from the accumulated reasoning
+// buffer and returns a ThinkingDelta event. Returns nil if the buffer is empty
+// or contains only tags.
+func (s *Stream) flushReasoningBuf() *agentflow.StreamEvent {
+	raw := s.reasoningBuf.String()
+	s.reasoningBuf.Reset()
+
+	text := stripReasoningTags(raw)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	return &agentflow.StreamEvent{
+		Type:          agentflow.StreamEventThinkingDelta,
+		ThinkingDelta: &agentflow.ContentDelta{Text: text},
+	}
+}
+
+// buildContentEvents processes a content delta through the think tag parser
+// and returns the resulting events.
+func (s *Stream) buildContentEvents(content string) []agentflow.StreamEvent {
+	segments := s.thinkParser.process(content)
+	var events []agentflow.StreamEvent
+	for _, seg := range segments {
+		if seg.text == "" {
+			continue
+		}
+		if seg.thinking {
+			events = append(events, agentflow.StreamEvent{
+				Type:          agentflow.StreamEventThinkingDelta,
+				ThinkingDelta: &agentflow.ContentDelta{Text: seg.text},
+			})
+		} else {
+			events = append(events, agentflow.StreamEvent{
+				Type:  agentflow.StreamEventDelta,
+				Delta: &agentflow.ContentDelta{Text: seg.text},
+			})
+		}
+	}
 	return events
 }
 

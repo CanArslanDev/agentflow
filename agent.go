@@ -2,13 +2,9 @@ package agentflow
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
-	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -350,26 +346,12 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 		}
 
 		// Build and send the model request.
-		// Native-first tool calling: send tools via Request.Tools (API-level).
-		// If the provider returns a 400 error (model doesn't support tool calling),
-		// fall back to text-based tool calling for the rest of this run.
 		sysPrompt := a.config.SystemPrompt
-		toolDefs := a.toolDefinitions()
-		var reqTools []ToolDefinition
-
-		if state.textToolFallback {
-			// Provider rejected native tools in a previous turn — use text-based.
-			if len(toolDefs) > 0 {
-				sysPrompt += a.buildToolInstruction()
-			}
-		} else {
-			reqTools = toolDefs
-		}
 
 		req := &Request{
 			Messages:      state.messages,
 			SystemPrompt:  sysPrompt,
-			Tools:         reqTools,
+			Tools:         a.toolDefinitions(),
 			MaxTokens:     a.config.MaxTokens,
 			Temperature:   a.config.Temperature,
 			StopSequences: nil,
@@ -393,23 +375,10 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			slog.Int("turn", state.turnCount),
 			slog.Int("messages", len(state.messages)),
 			slog.Int("tools", len(req.Tools)),
-			slog.Bool("text_tool_fallback", state.textToolFallback),
 		)
 
 		stream, err := a.createStreamWithRetry(ctx, req, events)
 		if err != nil {
-			// Check if this is a "tool calling not supported" error.
-			// If so, fall back to text-based tool calling and retry this turn.
-			if !state.textToolFallback && len(reqTools) > 0 && isToolCallingUnsupportedError(err) {
-				a.logWarn("native tool calling rejected, falling back to text-based",
-					slog.Int("turn", state.turnCount),
-					slog.String("error", err.Error()),
-				)
-				state.textToolFallback = true
-				state.turnCount-- // Don't count this failed attempt as a turn.
-				continue          // Retry the same turn with text-based tools.
-			}
-
 			a.logError("model call failed", slog.Int("turn", state.turnCount), slog.String("error", err.Error()))
 			a.emit(events, Event{
 				Type:  EventError,
@@ -494,48 +463,6 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			TurnCount: state.turnCount,
 			Metadata:  state.metadata,
 		}, state)
-
-		// Text-based tool calling: detect [TOOL_CALL: ...] in assistant text and thinking content.
-		// Models may write tool calls inside <think> blocks (native thinking) or during
-		// agentic thinking turns. We check thinking content first (since it may contain
-		// tool calls not present in the text content), then fall back to text content.
-		if len(a.tools) > 0 && len(toolCalls) == 0 {
-			var textToolCalls []ToolCall
-			// First check thinking content (native thinking or agentic thinking turn).
-			if state.lastThinkContent != "" {
-				textToolCalls = a.parseTextToolCalls(state.lastThinkContent)
-			}
-			// If no tool calls found in thinking, check text content.
-			if len(textToolCalls) == 0 {
-				textToolCalls = a.parseTextToolCalls(assistantMsg.TextContent())
-			}
-			// Dedup: remove tool calls that have already been executed in this run
-			// (same tool name + same input). Prevents infinite tool loops.
-			textToolCalls = a.deduplicateToolCalls(textToolCalls, state)
-			if len(textToolCalls) > 0 {
-				// Strip [TOOL_CALL: ...] patterns from the assistant message in history
-				// so the model doesn't see them in the next turn and repeat them.
-				a.stripToolCallsFromLastMessage(state)
-
-				results := a.executeTools(ctx, textToolCalls, state, events)
-				// Build tool result as a system message (model doesn't expect tool_result format).
-				var resultParts []string
-				for _, r := range results {
-					prefix := "Tool result"
-					if r.result.IsError {
-						prefix = "Tool error"
-					}
-					resultParts = append(resultParts, fmt.Sprintf("[%s from %s]: %s", prefix, r.callID, r.result.Content))
-				}
-				resultMsg := Message{
-					Role:    RoleSystem,
-					Content: []ContentBlock{{Type: ContentText, Text: strings.Join(resultParts, "\n\n")}},
-				}
-				state.messages = append(state.messages, resultMsg)
-				a.emit(events, Event{Type: EventMessage, Message: &resultMsg})
-				continue // Loop back so model can use the results.
-			}
-		}
 
 		// Check if tool calls are needed.
 		if len(toolCalls) == 0 {
@@ -698,17 +625,6 @@ func (a *Agent) consumeStream(ctx context.Context, stream Stream, events chan<- 
 		}
 		textBlock := ContentBlock{Type: ContentText, Text: fullText}
 		blocks = append([]ContentBlock{textBlock}, blocks...)
-	}
-
-	// Store thinking content in state for text tool call detection.
-	if state != nil && len(thinkParts) > 0 {
-		var sb strings.Builder
-		for _, p := range thinkParts {
-			sb.WriteString(p)
-		}
-		state.lastThinkContent = sb.String()
-	} else if state != nil {
-		state.lastThinkContent = ""
 	}
 
 	msg := Message{Role: RoleAssistant, Content: blocks}
@@ -1164,131 +1080,6 @@ func (a *Agent) logError(msg string, args ...any) {
 	}
 }
 
-// --- Text-based tool calling ---
-
-// textToolCallRegex matches [TOOL_CALL: tool_name("arguments")] or [TOOL_CALL: tool_name(arguments)].
-var textToolCallRegex = regexp.MustCompile(`\[TOOL_CALL:\s*(\w+)\(([^)]*)\)\]`)
-
-// isToolCallingUnsupportedError checks if an error indicates that the model
-// does not support native API-level tool calling. This triggers fallback to
-// text-based tool calling for the remainder of the run.
-func isToolCallingUnsupportedError(err error) bool {
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "tool calling") && (strings.Contains(msg, "not supported") || strings.Contains(msg, "is not supported")) ||
-		strings.Contains(msg, "tools") && strings.Contains(msg, "not supported") ||
-		strings.Contains(msg, "function calling") && strings.Contains(msg, "not supported")
-}
-
-// deduplicateToolCalls removes tool calls that have already been executed in this run
-// (same tool name + same input). This prevents models from entering infinite tool loops
-// where they repeatedly call the same tool with the same arguments.
-func (a *Agent) deduplicateToolCalls(calls []ToolCall, state *loopState) []ToolCall {
-	if state.executedToolCalls == nil {
-		state.executedToolCalls = make(map[string]bool)
-	}
-
-	var unique []ToolCall
-	for _, call := range calls {
-		key := call.Name + "\x00" + string(call.Input)
-		if state.executedToolCalls[key] {
-			a.logInfo("skipping duplicate tool call",
-				slog.String("tool", call.Name),
-				slog.String("input", string(call.Input)),
-			)
-			continue
-		}
-		state.executedToolCalls[key] = true
-		unique = append(unique, call)
-	}
-	return unique
-}
-
-// stripToolCallsFromLastMessage removes [TOOL_CALL: ...] patterns from the last
-// assistant message in state.messages. This prevents the model from seeing raw
-// tool call syntax in the conversation history and repeating it in the next turn.
-func (a *Agent) stripToolCallsFromLastMessage(state *loopState) {
-	for i := len(state.messages) - 1; i >= 0; i-- {
-		if state.messages[i].Role == RoleAssistant {
-			for j := range state.messages[i].Content {
-				if state.messages[i].Content[j].Type == ContentText {
-					cleaned := textToolCallRegex.ReplaceAllString(state.messages[i].Content[j].Text, "")
-					cleaned = strings.TrimSpace(cleaned)
-					state.messages[i].Content[j].Text = cleaned
-				}
-			}
-			break
-		}
-	}
-}
-
-// buildToolInstruction generates a system prompt fragment describing available
-// tools and the expected [TOOL_CALL: ...] format for text-based tool calling.
-func (a *Agent) buildToolInstruction() string {
-	tools := a.toolDefinitions()
-	if len(tools) == 0 {
-		return ""
-	}
-
-	var sb strings.Builder
-	sb.WriteString("\n\n## Available Tools\n")
-	for _, t := range tools {
-		sb.WriteString(fmt.Sprintf("- %s: %s\n", t.Name, t.Description))
-	}
-	sb.WriteString("\n## Tool Usage Rules\n")
-	sb.WriteString("Format: [TOOL_CALL: tool_name(\"arguments\")]\n")
-	sb.WriteString("- Use a tool ONLY when you genuinely need external/current data you don't have.\n")
-	sb.WriteString("- Call each tool AT MOST ONCE per response. Never repeat the same tool call.\n")
-	sb.WriteString("- For simple questions (greetings, math, general knowledge), answer directly WITHOUT tools.\n")
-	sb.WriteString("- After receiving tool results, provide your final answer immediately. Do not call more tools.\n")
-	return sb.String()
-}
-
-// parseTextToolCalls extracts [TOOL_CALL: tool_name("args")] patterns from text.
-// Returns ToolCall objects ready for execution through the standard tool pipeline.
-func (a *Agent) parseTextToolCalls(text string) []ToolCall {
-	matches := textToolCallRegex.FindAllStringSubmatch(text, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-
-	var calls []ToolCall
-	for i, match := range matches {
-		if len(match) < 3 {
-			continue
-		}
-		toolName := match[1]
-		rawArgs := match[2]
-
-		// Check if tool is registered.
-		if _, ok := a.tools[toolName]; !ok {
-			continue
-		}
-
-		// Clean up arguments: strip surrounding quotes if present.
-		rawArgs = strings.TrimSpace(rawArgs)
-		if len(rawArgs) >= 2 && rawArgs[0] == '"' && rawArgs[len(rawArgs)-1] == '"' {
-			rawArgs = rawArgs[1 : len(rawArgs)-1]
-		}
-
-		// Build JSON input. For simple string arguments, wrap as {"query": "..."}.
-		// For JSON-like input, pass through.
-		var inputJSON json.RawMessage
-		if len(rawArgs) > 0 && rawArgs[0] == '{' {
-			inputJSON = json.RawMessage(rawArgs)
-		} else {
-			inputJSON, _ = json.Marshal(map[string]string{"query": rawArgs})
-		}
-
-		calls = append(calls, ToolCall{
-			ID:    fmt.Sprintf("text-call-%d", i),
-			Name:  toolName,
-			Input: inputJSON,
-		})
-	}
-
-	return calls
-}
-
 // loopState carries mutable state across agentic loop iterations.
 type loopState struct {
 	messages  []Message
@@ -1301,18 +1092,6 @@ type loopState struct {
 	isThinkingTurn     bool // true when current turn should emit ThinkingDelta
 	thinkingCompleted  bool // true after the thinking turn has finished
 	nativeThinkingSeen bool // true if provider emitted StreamEventThinkingDelta
-
-	// Last turn's thinking content for text tool call detection.
-	// When [TOOL_CALL: ...] appears inside thinking, we need to parse it.
-	lastThinkContent string
-
-	// Track executed tool calls for deduplication (tool_name + input).
-	executedToolCalls map[string]bool
-
-	// Text tool calling fallback: set to true when native tool calling
-	// returns a 400 error (model doesn't support it). Once set, all
-	// subsequent turns in this run use text-based tool calling.
-	textToolFallback bool
 }
 
 // toolBatch groups tool calls by their concurrency safety.

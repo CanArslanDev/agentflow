@@ -127,8 +127,12 @@ type ToolCallAccumulator struct {
 }
 
 // ToJSON returns the accumulated arguments as json.RawMessage.
+// Returns "{}" if the accumulated arguments are empty or not valid JSON.
 func (acc *ToolCallAccumulator) ToJSON() json.RawMessage {
 	if acc.Arguments == "" {
+		return json.RawMessage("{}")
+	}
+	if !json.Valid([]byte(acc.Arguments)) {
 		return json.RawMessage("{}")
 	}
 	return json.RawMessage(acc.Arguments)

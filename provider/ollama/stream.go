@@ -120,6 +120,9 @@ func (s *ollamaStream) Next() (agentflow.StreamEvent, error) {
 func (s *ollamaStream) buildToolCallEvent(calls []responseToolCall, index int) agentflow.StreamEvent {
 	tc := calls[index]
 	argsJSON, _ := json.Marshal(tc.Function.Arguments)
+	if !json.Valid(argsJSON) {
+		argsJSON = json.RawMessage("{}")
+	}
 	return agentflow.StreamEvent{
 		Type: agentflow.StreamEventToolCall,
 		ToolCall: &agentflow.ToolCall{

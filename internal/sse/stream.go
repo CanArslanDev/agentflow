@@ -24,12 +24,6 @@ type Stream struct {
 	// Think tag parser for content field (<think>...</think> inline tags).
 	thinkParser thinkTagParser
 
-	// Strips model-internal tags from thinking content (<tool>, <output>).
-	thinkingStripper thinkTagStripper
-
-	// Strips model-internal tags from reasoning field (<think>, <tool>, <output>).
-	reasoningStripper thinkTagStripper
-
 	// Pending events from a single chunk that produced multiple segments.
 	pending []agentflow.StreamEvent
 }
@@ -115,10 +109,7 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 		}
 
 		if choice.Delta.Reasoning != nil && *choice.Delta.Reasoning != "" {
-			// Strip <think>/<​/think> tags from reasoning content — some models
-			// (e.g. Groq compound-beta) include them in the reasoning field.
-			// Uses a stateful stripper to handle tags split across chunks.
-			text := s.reasoningStripper.strip(*choice.Delta.Reasoning)
+			text := stripReasoningTags(*choice.Delta.Reasoning)
 			if text != "" {
 				return agentflow.StreamEvent{
 					Type:          agentflow.StreamEventThinkingDelta,
@@ -129,13 +120,6 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 		}
 
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-			// Flush any partial tag buffers from reasoning/thinking strippers.
-			// When switching from reasoning to content field, leftover partial
-			// tags in the stripper buffers would never be completed and should
-			// be discarded to prevent state corruption.
-			s.reasoningStripper.reset()
-			s.thinkingStripper.reset()
-
 			segments := s.thinkParser.process(*choice.Delta.Content)
 			events := make([]agentflow.StreamEvent, 0, len(segments))
 			for _, seg := range segments {
@@ -143,14 +127,9 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 					continue
 				}
 				if seg.thinking {
-					// Strip model-internal tags (<tool>, <output>) from thinking content.
-					cleaned := s.thinkingStripper.strip(seg.text)
-					if cleaned == "" {
-						continue
-					}
 					events = append(events, agentflow.StreamEvent{
 						Type:          agentflow.StreamEventThinkingDelta,
-						ThinkingDelta: &agentflow.ContentDelta{Text: cleaned},
+						ThinkingDelta: &agentflow.ContentDelta{Text: seg.text},
 					})
 				} else {
 					events = append(events, agentflow.StreamEvent{
@@ -189,6 +168,7 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 }
 
 // flushToolCalls converts accumulated tool call deltas into complete StreamEvents.
+// Only emits tool calls with valid JSON arguments.
 func (s *Stream) flushToolCalls() []agentflow.StreamEvent {
 	if len(s.toolCalls) == 0 {
 		return nil
@@ -222,87 +202,12 @@ func (s *Stream) Usage() *agentflow.Usage {
 	return s.usage
 }
 
-// reasoningTagStripper is the list of tags to strip from reasoning field content.
-// These are model-internal formatting tags that should not reach the client.
-var reasoningStripTags = []string{
-	"<think>", "</think>",
-	"<tool>", "</tool>",
-	"<output>", "</output>",
-}
-
-// thinkTagStripper removes model-internal tags (<think>, <tool>, <output> and
-// their closing counterparts) from streaming text, handling tags split across
-// chunk boundaries. Used for the reasoning field where content is already
-// classified as thinking but may contain raw formatting tags.
-type thinkTagStripper struct {
-	tagBuf string
-}
-
-// reset discards any buffered partial tag. Called when switching from
-// reasoning to content field to prevent stale state from corrupting
-// subsequent parsing.
-func (s *thinkTagStripper) reset() {
-	s.tagBuf = ""
-}
-
-// strip removes model-internal tags from text, returning the cleaned text.
-func (s *thinkTagStripper) strip(text string) string {
-	if s.tagBuf != "" {
-		text = s.tagBuf + text
-		s.tagBuf = ""
-	}
-
-	var result strings.Builder
-	for len(text) > 0 {
-		// Find the earliest tag match.
-		bestIdx := -1
-		bestTag := ""
-		for _, tag := range reasoningStripTags {
-			if idx := strings.Index(text, tag); idx >= 0 {
-				if bestIdx < 0 || idx < bestIdx {
-					bestIdx = idx
-					bestTag = tag
-				}
-			}
-		}
-		if bestIdx >= 0 {
-			result.WriteString(text[:bestIdx])
-			text = text[bestIdx+len(bestTag):]
-			continue
-		}
-
-		// Check for partial tag at end (any of the strip tags).
-		if partial := matchPartialSuffixAny(text, reasoningStripTags); partial > 0 {
-			result.WriteString(text[:len(text)-partial])
-			s.tagBuf = text[len(text)-partial:]
-			return result.String()
-		}
-
-		// No tags found.
-		result.WriteString(text)
-		break
-	}
-	return result.String()
-}
-
-// matchPartialSuffixAny checks if the end of text matches a prefix of any tag.
-// Returns the longest partial match length.
-func matchPartialSuffixAny(text string, tags []string) int {
-	best := 0
-	for _, tag := range tags {
-		if n := matchPartialSuffix(text, tag); n > best {
-			best = n
-		}
-	}
-	return best
-}
-
 // --- Think tag parser ---
 
 // thinkTagParser is a stateful parser that detects <think>...</think> tags in
 // streaming text content. Tags may be split across chunk boundaries.
 //
-// State machine: NORMAL → <think> → THINKING → </think> → NORMAL
+// State machine: NORMAL -> <think> -> THINKING -> </think> -> NORMAL
 type thinkTagParser struct {
 	thinking bool   // true when inside <think>...</think>
 	tagBuf   string // partial tag buffer for boundary-split tags
@@ -376,6 +281,23 @@ func (p *thinkTagParser) process(text string) []textSegment {
 	}
 
 	return segments
+}
+
+// reasoningTagReplacer strips model-internal tags from reasoning field content.
+// Stateless: replaces complete tags only, no cross-chunk buffering needed.
+// This avoids the state leakage issues of the old stateful thinkTagStripper.
+var reasoningTagReplacer = strings.NewReplacer(
+	"<think>", "",
+	"</think>", "",
+	"<tool>", "",
+	"</tool>", "",
+	"<output>", "",
+	"</output>", "",
+)
+
+// stripReasoningTags removes model-internal formatting tags from reasoning content.
+func stripReasoningTags(text string) string {
+	return reasoningTagReplacer.Replace(text)
 }
 
 // matchPartialSuffix checks if the end of text matches a prefix of tag.

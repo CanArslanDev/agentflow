@@ -84,8 +84,11 @@ type messageStartPayload struct {
 }
 
 type deltaPayload struct {
-	Type string `json:"type"` // "text_delta", "input_json_delta"
+	Type string `json:"type"` // "text_delta", "thinking_delta", "input_json_delta"
 	Text string `json:"text,omitempty"`
+
+	// For thinking_delta (reasoning content streaming)
+	Thinking string `json:"thinking,omitempty"`
 
 	// For input_json_delta (tool use arguments streaming)
 	PartialJSON string `json:"partial_json,omitempty"`

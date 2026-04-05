@@ -310,6 +310,9 @@ type geminiStream struct {
 	usage   *agentflow.Usage
 	done    bool
 	callIdx int
+
+	// Pending events from a single chunk with multiple parts.
+	pending []agentflow.StreamEvent
 }
 
 func newGeminiStream(resp *http.Response) *geminiStream {
@@ -320,6 +323,13 @@ func newGeminiStream(resp *http.Response) *geminiStream {
 }
 
 func (s *geminiStream) Next() (agentflow.StreamEvent, error) {
+	// Drain any pending events from a previous multi-part chunk.
+	if len(s.pending) > 0 {
+		ev := s.pending[0]
+		s.pending = s.pending[1:]
+		return ev, nil
+	}
+
 	for {
 		if s.done {
 			return agentflow.StreamEvent{}, io.EOF
@@ -356,25 +366,38 @@ func (s *geminiStream) Next() (agentflow.StreamEvent, error) {
 		}
 
 		cand := resp.Candidates[0]
+
+		// Collect events from all parts in this chunk.
+		var events []agentflow.StreamEvent
 		for _, part := range cand.Content.Parts {
 			if part.Text != "" {
-				return agentflow.StreamEvent{
+				events = append(events, agentflow.StreamEvent{
 					Type:  agentflow.StreamEventDelta,
 					Delta: &agentflow.ContentDelta{Text: part.Text},
-				}, nil
+				})
 			}
 			if part.FunctionCall != nil {
 				argsJSON, _ := json.Marshal(part.FunctionCall.Args)
+				if !json.Valid(argsJSON) {
+					argsJSON = json.RawMessage("{}")
+				}
 				s.callIdx++
-				return agentflow.StreamEvent{
+				events = append(events, agentflow.StreamEvent{
 					Type: agentflow.StreamEventToolCall,
 					ToolCall: &agentflow.ToolCall{
 						ID:    fmt.Sprintf("call_%d", s.callIdx),
 						Name:  part.FunctionCall.Name,
 						Input: argsJSON,
 					},
-				}, nil
+				})
 			}
+		}
+
+		if len(events) > 0 {
+			if len(events) > 1 {
+				s.pending = events[1:]
+			}
+			return events[0], nil
 		}
 
 		if cand.FinishReason == "STOP" || cand.FinishReason == "MAX_TOKENS" {

@@ -16,6 +16,8 @@ import (
 //     content_block_stop / message_delta / message_stop
 //   - Tool calls arrive as content_block_start (type: tool_use) followed by
 //     content_block_delta (type: input_json_delta) chunks.
+//   - Thinking blocks arrive as content_block_start (type: thinking) followed by
+//     content_block_delta (type: thinking_delta) chunks.
 type anthropicStream struct {
 	resp    *http.Response
 	scanner *bufio.Scanner
@@ -26,6 +28,9 @@ type anthropicStream struct {
 	currentToolID   string
 	currentToolName string
 	currentToolJSON string
+
+	// Current content block type tracking.
+	currentBlockType string
 }
 
 func newAnthropicStream(resp *http.Response) *anthropicStream {
@@ -82,10 +87,13 @@ func (s *anthropicStream) Next() (agentflow.StreamEvent, error) {
 			if err := json.Unmarshal([]byte(data), &ev); err != nil {
 				continue
 			}
-			if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
-				s.currentToolID = ev.ContentBlock.ID
-				s.currentToolName = ev.ContentBlock.Name
-				s.currentToolJSON = ""
+			if ev.ContentBlock != nil {
+				s.currentBlockType = ev.ContentBlock.Type
+				if ev.ContentBlock.Type == "tool_use" {
+					s.currentToolID = ev.ContentBlock.ID
+					s.currentToolName = ev.ContentBlock.Name
+					s.currentToolJSON = ""
+				}
 			}
 			continue
 
@@ -106,16 +114,26 @@ func (s *anthropicStream) Next() (agentflow.StreamEvent, error) {
 						Delta: &agentflow.ContentDelta{Text: ev.Delta.Text},
 					}, nil
 				}
+			case "thinking_delta":
+				if ev.Delta.Thinking != "" {
+					return agentflow.StreamEvent{
+						Type:          agentflow.StreamEventThinkingDelta,
+						ThinkingDelta: &agentflow.ContentDelta{Text: ev.Delta.Thinking},
+					}, nil
+				}
 			case "input_json_delta":
 				s.currentToolJSON += ev.Delta.PartialJSON
 			}
 			continue
 
 		case "content_block_stop":
+			blockType := s.currentBlockType
+			s.currentBlockType = ""
+
 			// If we were accumulating a tool call, emit it now.
-			if s.currentToolID != "" {
+			if blockType == "tool_use" && s.currentToolID != "" {
 				toolJSON := s.currentToolJSON
-				if toolJSON == "" {
+				if toolJSON == "" || !json.Valid([]byte(toolJSON)) {
 					toolJSON = "{}"
 				}
 				ev := agentflow.StreamEvent{

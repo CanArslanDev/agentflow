@@ -228,6 +228,49 @@ func containsSubstr(s, substr string) bool {
 	return false
 }
 
+func TestOpenAI_ThinkTagParsing(t *testing.T) {
+	server := httptest.NewServer(sseResponse(
+		`{"choices":[{"delta":{"content":"<think>\nLet me analyze"},"index":0}]}`,
+		`{"choices":[{"delta":{"content":" this.\n</think>\n\n"},"index":0}]}`,
+		`{"choices":[{"delta":{"content":"The answer is 42."},"index":0}]}`,
+	))
+	defer server.Close()
+
+	provider := openai.New("test-key", "gpt-4o", openai.WithBaseURL(server.URL))
+
+	stream, err := provider.CreateStream(context.Background(), &agentflow.Request{
+		Messages: []agentflow.Message{agentflow.NewUserMessage("Hi")},
+	})
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	defer stream.Close()
+
+	var thinking, text string
+	for {
+		ev, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		switch ev.Type {
+		case agentflow.StreamEventThinkingDelta:
+			thinking += ev.ThinkingDelta.Text
+		case agentflow.StreamEventDelta:
+			text += ev.Delta.Text
+		}
+	}
+
+	if thinking != "\nLet me analyze this.\n" {
+		t.Errorf("thinking: %q", thinking)
+	}
+	if text != "\n\nThe answer is 42." {
+		t.Errorf("text: %q", text)
+	}
+}
+
 func TestOpenAI_MetadataPropagation(t *testing.T) {
 	var receivedHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

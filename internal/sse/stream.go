@@ -11,7 +11,7 @@ import (
 )
 
 // Stream parses an OpenAI-compatible SSE response into agentflow StreamEvents.
-// It handles text deltas, thinking deltas, and tool call accumulation.
+// It handles text deltas, thinking deltas, think tag parsing, and tool call accumulation.
 type Stream struct {
 	resp    *http.Response
 	scanner *bufio.Scanner
@@ -20,6 +20,15 @@ type Stream struct {
 
 	// Tool call accumulators keyed by index.
 	toolCalls map[int]*ToolCallAccumulator
+
+	// Think tag parser for content field (<think>...</think> inline tags).
+	thinkParser thinkTagParser
+
+	// Think tag stripper for reasoning field (strips tags from native thinking).
+	reasoningStripper thinkTagStripper
+
+	// Pending events from a single chunk that produced multiple segments.
+	pending []agentflow.StreamEvent
 }
 
 // NewStream creates an SSE stream parser from an HTTP response.
@@ -33,6 +42,13 @@ func NewStream(resp *http.Response) *Stream {
 
 // Next returns the next StreamEvent. Returns io.EOF when the stream is complete.
 func (s *Stream) Next() (agentflow.StreamEvent, error) {
+	// Drain any pending events from a previous multi-segment chunk.
+	if len(s.pending) > 0 {
+		ev := s.pending[0]
+		s.pending = s.pending[1:]
+		return ev, nil
+	}
+
 	for {
 		if s.done {
 			return agentflow.StreamEvent{}, io.EOF
@@ -94,17 +110,45 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 		}
 
 		if choice.Delta.Reasoning != nil && *choice.Delta.Reasoning != "" {
-			return agentflow.StreamEvent{
-				Type:          agentflow.StreamEventThinkingDelta,
-				ThinkingDelta: &agentflow.ContentDelta{Text: *choice.Delta.Reasoning},
-			}, nil
+			// Strip <think>/<​/think> tags from reasoning content — some models
+			// (e.g. Groq compound-beta) include them in the reasoning field.
+			// Uses a stateful stripper to handle tags split across chunks.
+			text := s.reasoningStripper.strip(*choice.Delta.Reasoning)
+			if text != "" {
+				return agentflow.StreamEvent{
+					Type:          agentflow.StreamEventThinkingDelta,
+					ThinkingDelta: &agentflow.ContentDelta{Text: text},
+				}, nil
+			}
+			continue
 		}
 
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-			return agentflow.StreamEvent{
-				Type:  agentflow.StreamEventDelta,
-				Delta: &agentflow.ContentDelta{Text: *choice.Delta.Content},
-			}, nil
+			segments := s.thinkParser.process(*choice.Delta.Content)
+			events := make([]agentflow.StreamEvent, 0, len(segments))
+			for _, seg := range segments {
+				if seg.text == "" {
+					continue
+				}
+				if seg.thinking {
+					events = append(events, agentflow.StreamEvent{
+						Type:          agentflow.StreamEventThinkingDelta,
+						ThinkingDelta: &agentflow.ContentDelta{Text: seg.text},
+					})
+				} else {
+					events = append(events, agentflow.StreamEvent{
+						Type:  agentflow.StreamEventDelta,
+						Delta: &agentflow.ContentDelta{Text: seg.text},
+					})
+				}
+			}
+			if len(events) == 0 {
+				continue
+			}
+			if len(events) > 1 {
+				s.pending = events[1:]
+			}
+			return events[0], nil
 		}
 
 		if len(choice.Delta.ToolCalls) > 0 {
@@ -159,4 +203,147 @@ func (s *Stream) Close() error {
 // Usage returns token usage statistics collected during streaming.
 func (s *Stream) Usage() *agentflow.Usage {
 	return s.usage
+}
+
+// thinkTagStripper removes <think> and </think> tags from streaming text,
+// handling tags split across chunk boundaries. Used for the reasoning field
+// where content is already classified as thinking but may contain raw tags.
+type thinkTagStripper struct {
+	tagBuf string
+}
+
+// strip removes <think> and </think> tags from text, returning the cleaned text.
+func (s *thinkTagStripper) strip(text string) string {
+	if s.tagBuf != "" {
+		text = s.tagBuf + text
+		s.tagBuf = ""
+	}
+
+	var result strings.Builder
+	for len(text) > 0 {
+		// Check for <think> tag.
+		if idx := strings.Index(text, "<think>"); idx >= 0 {
+			result.WriteString(text[:idx])
+			text = text[idx+len("<think>"):]
+			continue
+		}
+		// Check for </think> tag.
+		if idx := strings.Index(text, "</think>"); idx >= 0 {
+			result.WriteString(text[:idx])
+			text = text[idx+len("</think>"):]
+			continue
+		}
+		// Check for partial tag at end.
+		if partial := matchPartialSuffix(text, "<think>"); partial > 0 {
+			result.WriteString(text[:len(text)-partial])
+			s.tagBuf = text[len(text)-partial:]
+			return result.String()
+		}
+		if partial := matchPartialSuffix(text, "</think>"); partial > 0 {
+			result.WriteString(text[:len(text)-partial])
+			s.tagBuf = text[len(text)-partial:]
+			return result.String()
+		}
+		// No tags found.
+		result.WriteString(text)
+		break
+	}
+	return result.String()
+}
+
+// --- Think tag parser ---
+
+// thinkTagParser is a stateful parser that detects <think>...</think> tags in
+// streaming text content. Tags may be split across chunk boundaries.
+//
+// State machine: NORMAL → <think> → THINKING → </think> → NORMAL
+type thinkTagParser struct {
+	thinking bool   // true when inside <think>...</think>
+	tagBuf   string // partial tag buffer for boundary-split tags
+}
+
+// textSegment is a piece of text with its thinking/normal classification.
+type textSegment struct {
+	text     string
+	thinking bool
+}
+
+// process takes a chunk of text and returns classified segments.
+// It handles <think> and </think> tags, including when they are split across chunks.
+func (p *thinkTagParser) process(text string) []textSegment {
+	var segments []textSegment
+
+	// Prepend any buffered partial tag from previous chunk.
+	if p.tagBuf != "" {
+		text = p.tagBuf + text
+		p.tagBuf = ""
+	}
+
+	for len(text) > 0 {
+		if p.thinking {
+			// Looking for </think>
+			idx := strings.Index(text, "</think>")
+			if idx >= 0 {
+				// Found closing tag.
+				if idx > 0 {
+					segments = append(segments, textSegment{text: text[:idx], thinking: true})
+				}
+				p.thinking = false
+				text = text[idx+len("</think>"):]
+				continue
+			}
+			// Check if text ends with a partial </think> tag.
+			if partial := matchPartialSuffix(text, "</think>"); partial > 0 {
+				if len(text)-partial > 0 {
+					segments = append(segments, textSegment{text: text[:len(text)-partial], thinking: true})
+				}
+				p.tagBuf = text[len(text)-partial:]
+				return segments
+			}
+			// No tag found, all text is thinking.
+			segments = append(segments, textSegment{text: text, thinking: true})
+			return segments
+		}
+
+		// NORMAL state: looking for <think>
+		idx := strings.Index(text, "<think>")
+		if idx >= 0 {
+			// Found opening tag.
+			if idx > 0 {
+				segments = append(segments, textSegment{text: text[:idx], thinking: false})
+			}
+			p.thinking = true
+			text = text[idx+len("<think>"):]
+			continue
+		}
+		// Check if text ends with a partial <think> tag.
+		if partial := matchPartialSuffix(text, "<think>"); partial > 0 {
+			if len(text)-partial > 0 {
+				segments = append(segments, textSegment{text: text[:len(text)-partial], thinking: false})
+			}
+			p.tagBuf = text[len(text)-partial:]
+			return segments
+		}
+		// No tag found, all text is normal.
+		segments = append(segments, textSegment{text: text, thinking: false})
+		return segments
+	}
+
+	return segments
+}
+
+// matchPartialSuffix checks if the end of text matches a prefix of tag.
+// Returns the length of the partial match (0 if no match).
+// For example, text="hello<thi" and tag="<think>" returns 4 ("<thi").
+func matchPartialSuffix(text, tag string) int {
+	maxLen := len(tag) - 1
+	if maxLen > len(text) {
+		maxLen = len(text)
+	}
+	for i := maxLen; i > 0; i-- {
+		if strings.HasSuffix(text, tag[:i]) {
+			return i
+		}
+	}
+	return 0
 }

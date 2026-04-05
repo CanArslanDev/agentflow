@@ -148,3 +148,45 @@ func TestGroqCompoundToolUse(t *testing.T) {
 	fmt.Printf("Response: %s\n", text)
 	fmt.Printf("========================================\n")
 }
+
+// TestGroqCompoundThinkTag tests that <think> tags from Groq compound models
+// are parsed into StreamEventThinkingDelta events.
+func TestGroqCompoundThinkTag(t *testing.T) {
+	key := getAPIKey(t)
+
+	// compound-beta uses <think> tags for reasoning.
+	provider := groq.New(key, "compound-beta")
+
+	agent := agentflow.NewAgent(provider,
+		agentflow.WithMaxTurns(5),
+		agentflow.WithMaxTokens(300),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var thinking, text string
+	for ev := range agent.Run(ctx, []agentflow.Message{
+		agentflow.NewUserMessage("What is 15 * 28? Think step by step."),
+	}) {
+		switch ev.Type {
+		case agentflow.EventThinkingDelta:
+			thinking += ev.ThinkDelta.Text
+		case agentflow.EventTextDelta:
+			text += ev.TextDelta.Text
+		case agentflow.EventError:
+			t.Logf("Error: %v (retrying: %v)", ev.Error.Err, ev.Error.Retrying)
+		}
+	}
+
+	t.Logf("Thinking (%d chars): %q", len(thinking), thinking)
+	t.Logf("Answer (%d chars): %q", len(text), text)
+
+	// compound-beta should produce thinking content via <think> tags.
+	if thinking == "" {
+		t.Log("Note: no thinking content detected. Model may not have used <think> tags for this query.")
+	}
+	if text == "" {
+		t.Error("expected non-empty answer text")
+	}
+}

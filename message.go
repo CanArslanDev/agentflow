@@ -235,8 +235,9 @@ func newToolResultMessage(results []toolExecResult) Message {
 // toolExecResult pairs a tool call ID with its execution result.
 // This is an internal type used to bridge the executor and message builder.
 type toolExecResult struct {
-	callID string
-	result *ToolResult
+	callID   string
+	result   *ToolResult
+	critical bool // true if this error should terminate the agent loop
 }
 
 // ToolCall represents the model's request to invoke a tool. The ID is generated

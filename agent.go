@@ -382,6 +382,30 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 
 		stream, err := a.createStreamWithRetry(ctx, req, events)
 		if err != nil {
+			// Auto-compaction: if the error is "context too large" and we have a
+			// compactor, compact the conversation and retry this turn.
+			if IsContextTooLargeError(err) && a.compactor != nil {
+				a.logWarn("context too large, attempting auto-compaction",
+					slog.Int("turn", state.turnCount),
+					slog.Int("messages", len(state.messages)),
+				)
+				beforeCount := len(state.messages)
+				compacted, compactErr := a.compactor.Compact(ctx, state.messages)
+				if compactErr == nil && len(compacted) < beforeCount {
+					state.messages = compacted
+					a.emit(events, Event{
+						Type: EventCompaction,
+						Compaction: &CompactionEvent{
+							BeforeCount: beforeCount,
+							AfterCount:  len(compacted),
+							TurnCount:   state.turnCount,
+						},
+					})
+					state.turnCount-- // Don't count this failed attempt.
+					continue          // Retry with compacted context.
+				}
+			}
+
 			a.logError("model call failed", slog.Int("turn", state.turnCount), slog.String("error", err.Error()))
 			a.emit(events, Event{
 				Type:  EventError,
@@ -522,10 +546,31 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			results = a.executeTools(ctx, toolCalls, state, events)
 		}
 
+		// Ensure every tool call has a corresponding result.
+		// If any tool call is missing from results (e.g. cancelled mid-execution),
+		// create an error result so the model doesn't get desynchronized.
+		results = a.ensureAllToolCallsHaveResults(toolCalls, results)
+
 		// Build and append the tool results message.
 		toolResultMsg := newToolResultMessage(results)
 		state.messages = append(state.messages, toolResultMsg)
 		a.emit(events, Event{Type: EventMessage, Message: &toolResultMsg})
+
+		// Check for critical tool execution errors. Non-critical errors
+		// (unknown tool, validation failure) are sent to the model for
+		// self-correction. Critical errors (tool crash, panic) terminate the loop.
+		for _, r := range results {
+			if r.critical {
+				a.logError("critical tool execution error, terminating",
+					slog.String("call_id", r.callID),
+				)
+				a.emit(events, Event{
+					Type:    EventTurnEnd,
+					TurnEnd: &TurnEndEvent{TurnNumber: state.turnCount, Reason: TurnEndError, Messages: state.messages},
+				})
+				return
+			}
+		}
 
 		// Loop detection: check if tool interactions are repeating.
 		if a.detectToolLoop(toolCalls, results, state) {
@@ -729,8 +774,10 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 		// "web_search"). Try suffix and substring matching before giving up.
 		tool, ok = a.fuzzyMatchTool(call.Name)
 		if !ok {
+			// Provide available tool names so the model can self-correct.
+			available := a.availableToolNames()
 			return emitEarlyReturn(&ToolResult{
-				Content: "Error: unknown tool \"" + call.Name + "\"",
+				Content: "Error: unknown tool \"" + call.Name + "\". Available tools: " + strings.Join(available, ", ") + ". Please use one of these exact tool names.",
 				IsError: true,
 			})
 		}
@@ -803,6 +850,8 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 	}
 
 	// Input validation against tool's JSON Schema.
+	// On failure, return a descriptive error so the model can self-correct
+	// and retry with valid input (tool call repair pattern).
 	if !a.config.DisableInputValidation {
 		if schema := tool.InputSchema(); len(schema) > 0 {
 			if err := jsonschema.Validate(schema, currentCall.Input); err != nil {
@@ -811,7 +860,7 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 					slog.String("error", err.Error()),
 				)
 				return emitEarlyReturn(&ToolResult{
-					Content: "input validation error for tool \"" + call.Name + "\": " + err.Error(),
+					Content: a.buildValidationErrorMessage(tool, err),
 					IsError: true,
 				})
 			}
@@ -849,7 +898,8 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 		}
 
 		var toolErr error
-		result, toolErr = a.callToolWithRecovery(toolCtx, tool, currentCall.Input, progressFn)
+		var panicked bool
+		result, toolErr, panicked = a.callToolWithRecovery(toolCtx, tool, currentCall.Input, progressFn)
 
 		if cancelTimeout != nil {
 			cancelTimeout()
@@ -857,6 +907,13 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 
 		if toolErr != nil {
 			result = &ToolResult{Content: toolErr.Error(), IsError: true}
+		}
+
+		// Panics are critical — terminate the loop after emitting results.
+		if panicked {
+			a.emit(events, Event{Type: EventToolStart, ToolStart: &ToolStartEvent{ToolCall: call}})
+			a.emit(events, Event{Type: EventToolEnd, ToolEnd: &ToolEndEvent{ToolCall: call, Result: *result, Duration: time.Since(start)}})
+			return toolExecResult{callID: call.ID, result: result, critical: true}
 		}
 
 		// Only retry if result is an error and we have attempts left.
@@ -919,7 +976,8 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 }
 
 // callToolWithRecovery calls tool.Execute with panic recovery.
-func (a *Agent) callToolWithRecovery(ctx context.Context, tool Tool, input []byte, progress ProgressFunc) (result *ToolResult, err error) {
+// Returns panicked=true if the tool panicked (critical, loop should terminate).
+func (a *Agent) callToolWithRecovery(ctx context.Context, tool Tool, input []byte, progress ProgressFunc) (result *ToolResult, err error, panicked bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			result = &ToolResult{
@@ -927,9 +985,11 @@ func (a *Agent) callToolWithRecovery(ctx context.Context, tool Tool, input []byt
 				IsError: true,
 			}
 			err = nil
+			panicked = true
 		}
 	}()
-	return tool.Execute(ctx, input, progress)
+	res, execErr := tool.Execute(ctx, input, progress)
+	return res, execErr, false
 }
 
 // createStreamWithRetry wraps provider.CreateStream with rate limiting and retry logic.
@@ -1106,6 +1166,103 @@ func (a *Agent) logError(msg string, args ...any) {
 	if a.config.Logger != nil {
 		a.config.Logger.Error(msg, args...)
 	}
+}
+
+// ensureAllToolCallsHaveResults guarantees that every tool call has a
+// corresponding result. If a tool call is missing from results (due to
+// cancellation, timeout, or execution error), an error result is created.
+// This prevents the model from becoming desynchronized expecting results
+// that will never arrive.
+func (a *Agent) ensureAllToolCallsHaveResults(calls []ToolCall, results []toolExecResult) []toolExecResult {
+	if len(results) >= len(calls) {
+		return results
+	}
+
+	// Build set of call IDs that have results.
+	hasResult := make(map[string]bool, len(results))
+	for _, r := range results {
+		hasResult[r.callID] = true
+	}
+
+	// Add error results for any missing tool calls.
+	for _, call := range calls {
+		if !hasResult[call.ID] {
+			a.logWarn("tool call missing result, adding error result",
+				slog.String("tool", call.Name),
+				slog.String("call_id", call.ID),
+			)
+			results = append(results, toolExecResult{
+				callID: call.ID,
+				result: &ToolResult{
+					Content: "Tool execution was interrupted or cancelled. Please retry if needed.",
+					IsError: true,
+				},
+			})
+		}
+	}
+
+	return results
+}
+
+// availableToolNames returns a sorted list of registered tool names.
+func (a *Agent) availableToolNames() []string {
+	names := make([]string, 0, len(a.tools))
+	for name := range a.tools {
+		names = append(names, name)
+	}
+	return names
+}
+
+// buildValidationErrorMessage creates a descriptive error message that helps
+// the model self-correct its tool call (tool call repair pattern).
+// Instead of a generic error, it tells the model exactly what's wrong and
+// what the correct format should be.
+func (a *Agent) buildValidationErrorMessage(tool Tool, validationErr error) string {
+	var b strings.Builder
+	b.WriteString("Tool call validation failed for \"")
+	b.WriteString(tool.Name())
+	b.WriteString("\": ")
+	b.WriteString(validationErr.Error())
+	b.WriteString("\n\nPlease fix and retry. Expected input schema:\n")
+
+	schema := tool.InputSchema()
+	if props, ok := schema["properties"].(map[string]any); ok {
+		for name, prop := range props {
+			b.WriteString("  - ")
+			b.WriteString(name)
+			if propMap, ok := prop.(map[string]any); ok {
+				if t, ok := propMap["type"].(string); ok {
+					b.WriteString(" (")
+					b.WriteString(t)
+					b.WriteString(")")
+				}
+				if desc, ok := propMap["description"].(string); ok {
+					b.WriteString(": ")
+					b.WriteString(desc)
+				}
+			}
+			b.WriteString("\n")
+		}
+	}
+	if req, ok := schema["required"]; ok {
+		b.WriteString("Required fields: ")
+		switch v := req.(type) {
+		case []string:
+			b.WriteString(strings.Join(v, ", "))
+		case []any:
+			for i, r := range v {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				if s, ok := r.(string); ok {
+					b.WriteString(s)
+				}
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	return b.String()
 }
 
 // detectToolLoop checks if tool interactions are forming a repeating pattern.

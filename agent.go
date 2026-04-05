@@ -489,6 +489,9 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			if len(textToolCalls) == 0 {
 				textToolCalls = a.parseTextToolCalls(assistantMsg.TextContent())
 			}
+			// Dedup: remove tool calls that have already been executed in this run
+			// (same tool name + same input). Prevents infinite tool loops.
+			textToolCalls = a.deduplicateToolCalls(textToolCalls, state)
 			if len(textToolCalls) > 0 {
 				// Strip [TOOL_CALL: ...] patterns from the assistant message in history
 				// so the model doesn't see them in the next turn and repeat them.
@@ -1146,6 +1149,30 @@ func (a *Agent) logError(msg string, args ...any) {
 // textToolCallRegex matches [TOOL_CALL: tool_name("arguments")] or [TOOL_CALL: tool_name(arguments)].
 var textToolCallRegex = regexp.MustCompile(`\[TOOL_CALL:\s*(\w+)\(([^)]*)\)\]`)
 
+// deduplicateToolCalls removes tool calls that have already been executed in this run
+// (same tool name + same input). This prevents models from entering infinite tool loops
+// where they repeatedly call the same tool with the same arguments.
+func (a *Agent) deduplicateToolCalls(calls []ToolCall, state *loopState) []ToolCall {
+	if state.executedToolCalls == nil {
+		state.executedToolCalls = make(map[string]bool)
+	}
+
+	var unique []ToolCall
+	for _, call := range calls {
+		key := call.Name + "\x00" + string(call.Input)
+		if state.executedToolCalls[key] {
+			a.logInfo("skipping duplicate tool call",
+				slog.String("tool", call.Name),
+				slog.String("input", string(call.Input)),
+			)
+			continue
+		}
+		state.executedToolCalls[key] = true
+		unique = append(unique, call)
+	}
+	return unique
+}
+
 // stripToolCallsFromLastMessage removes [TOOL_CALL: ...] patterns from the last
 // assistant message in state.messages. This prevents the model from seeing raw
 // tool call syntax in the conversation history and repeating it in the next turn.
@@ -1173,17 +1200,16 @@ func (a *Agent) buildToolInstruction() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("\n\nYou have access to the following tools:\n")
+	sb.WriteString("\n\n## Available Tools\n")
 	for _, t := range tools {
 		sb.WriteString(fmt.Sprintf("- %s: %s\n", t.Name, t.Description))
 	}
-	sb.WriteString("\nWhen you need to use a tool, write EXACTLY this format in your response:\n")
-	sb.WriteString("[TOOL_CALL: tool_name(\"arguments\")]\n\n")
-	sb.WriteString("Examples:\n")
-	sb.WriteString("[TOOL_CALL: web_search(\"current weather in Istanbul\")]\n")
-	sb.WriteString("[TOOL_CALL: deep_search(\"April 5 2026 special events\")]\n\n")
-	sb.WriteString("Wait for the tool result before providing your final answer.\n")
-	sb.WriteString("Do NOT make up information - use the appropriate tool for current or factual data.\n")
+	sb.WriteString("\n## Tool Usage Rules\n")
+	sb.WriteString("Format: [TOOL_CALL: tool_name(\"arguments\")]\n")
+	sb.WriteString("- Use a tool ONLY when you genuinely need external/current data you don't have.\n")
+	sb.WriteString("- Call each tool AT MOST ONCE per response. Never repeat the same tool call.\n")
+	sb.WriteString("- For simple questions (greetings, math, general knowledge), answer directly WITHOUT tools.\n")
+	sb.WriteString("- After receiving tool results, provide your final answer immediately. Do not call more tools.\n")
 	return sb.String()
 }
 
@@ -1249,6 +1275,9 @@ type loopState struct {
 	// Last turn's thinking content for text tool call detection.
 	// When [TOOL_CALL: ...] appears inside thinking, we need to parse it.
 	lastThinkContent string
+
+	// Track executed tool calls for deduplication (tool_name + input).
+	executedToolCalls map[string]bool
 }
 
 // toolBatch groups tool calls by their concurrency safety.

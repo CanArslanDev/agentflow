@@ -358,13 +358,14 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 		}
 
 		req := &Request{
-			Messages:      state.messages,
-			SystemPrompt:  sysPrompt,
-			Tools:         tools,
-			MaxTokens:     a.config.MaxTokens,
-			Temperature:   a.config.Temperature,
-			StopSequences: nil,
-			Metadata:      extractRequestMetadata(state.metadata),
+			Messages:       state.messages,
+			SystemPrompt:   sysPrompt,
+			Tools:          tools,
+			MaxTokens:      a.config.MaxTokens,
+			Temperature:    a.config.Temperature,
+			StopSequences:  nil,
+			Metadata:       extractRequestMetadata(state.metadata),
+			ProviderExtras: a.config.ProviderExtras,
 		}
 
 		// Agentic thinking: on the thinking turn, inject thinking prompt.

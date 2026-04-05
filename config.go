@@ -98,6 +98,11 @@ type Config struct {
 	// AnswerPrompt is injected after the thinking turn to trigger the final answer.
 	// Only used when ThinkingPrompt is set.
 	AnswerPrompt string
+
+	// ProviderExtras carries provider-specific parameters merged into every
+	// request body. Examples: OpenRouter "plugins" for file parsing, Anthropic
+	// cache control. Each provider picks the keys it understands.
+	ProviderExtras map[string]any
 }
 
 // RetryPolicy configures automatic retries for transient errors.
@@ -359,6 +364,26 @@ func WithThinkingPrompt(thinkPrompt, answerPrompt string) Option {
 	return func(a *Agent) {
 		a.config.ThinkingPrompt = thinkPrompt
 		a.config.AnswerPrompt = answerPrompt
+	}
+}
+
+// WithProviderExtras sets provider-specific parameters that are merged into
+// every request body. Each provider picks the keys it understands and ignores
+// the rest. This enables provider-specific features without breaking the
+// provider-agnostic API.
+//
+// Example: OpenRouter file-parser plugin for PDF support:
+//
+//	agent := agentflow.NewAgent(provider,
+//	    agentflow.WithProviderExtras(map[string]any{
+//	        "plugins": []map[string]any{
+//	            {"id": "file-parser", "pdf": map[string]any{"engine": "native"}},
+//	        },
+//	    }),
+//	)
+func WithProviderExtras(extras map[string]any) Option {
+	return func(a *Agent) {
+		a.config.ProviderExtras = extras
 	}
 }
 

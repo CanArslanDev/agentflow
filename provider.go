@@ -53,6 +53,12 @@ type Request struct {
 	// "tracestate") or custom request tagging. Providers add these as headers
 	// prefixed with nothing — keys map directly to header names.
 	Metadata map[string]string
+
+	// ProviderExtras carries provider-specific parameters that are merged into
+	// the request body. Examples: OpenRouter "plugins" for file parsing,
+	// Anthropic cache control, Gemini safety settings. Each provider picks
+	// the keys it understands and ignores the rest.
+	ProviderExtras map[string]any
 }
 
 // Stream yields events from a model response. The caller reads events sequentially

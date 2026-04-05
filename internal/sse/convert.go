@@ -164,5 +164,9 @@ func BuildRequestBody(model string, req *agentflow.Request) ChatRequest {
 	if len(req.StopSequences) > 0 {
 		cr.Stop = req.StopSequences
 	}
+	// Provider-specific extras: pick known keys.
+	if plugins, ok := req.ProviderExtras["plugins"]; ok {
+		cr.Plugins = plugins
+	}
 	return cr
 }

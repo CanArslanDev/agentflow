@@ -16,6 +16,7 @@ type ChatRequest struct {
 	Temperature *float64         `json:"temperature,omitempty"`
 	Stream      bool             `json:"stream"`
 	Stop        []string         `json:"stop,omitempty"`
+	Plugins     any              `json:"plugins,omitempty"`
 }
 
 // RequestMessage is a single message in the OpenAI format.

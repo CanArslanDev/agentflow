@@ -35,6 +35,15 @@ An agentic AI system is one where a language model autonomously decides to invok
 
 - **Provider-agnostic** -- works with OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, or any custom provider
 - **Streaming-first** -- real-time event delivery via Go channels (17 event types)
+- **Native tool calling** -- uses provider-native function calling APIs with JSON validation
+- **Fuzzy tool name matching** -- handles models that shorten tool names (e.g. "search" matches "web_search")
+- **Tool call repair** -- validation errors return full schema with field descriptions so the model can self-correct
+- **Guaranteed tool results** -- every tool call gets a result, even if execution is cancelled or interrupted
+- **Loop detection** -- SHA-256 signature tracking detects repetitive tool calling patterns (configurable threshold)
+- **Early tool emission** -- tool calls emitted mid-stream when JSON arguments are valid, reducing latency
+- **Auto-compaction** -- automatically compacts conversation on "context too large" errors and retries
+- **Graceful tool fallback** -- models that don't support native tool calling (e.g. Groq compound) automatically retry without tools
+- **Critical error handling** -- tool panics terminate the loop; validation errors are non-critical and sent to model for self-correction
 - **Execution modes** -- ModeLocal for full access, ModeRemote for server-safe tools only
 - **Input validation** -- automatic JSON Schema validation of tool inputs before execution
 - **Rate limiting** -- token bucket rate limiter for provider API calls
@@ -43,6 +52,7 @@ An agentic AI system is one where a language model autonomously decides to invok
 - **Tool timeout and retry** -- configurable per-tool timeout and retry on failure
 - **Circuit breaker** -- middleware that blocks tools after consecutive failures
 - **Error strategy** -- configurable error handling (transform errors, abort loop)
+- **Anthropic thinking** -- native `thinking_delta` support for extended thinking/reasoning
 - **Sub-agent system** -- spawn child agents, parallel orchestration, delegate_task tool
 - **Agent cloning** -- derive specialized agents from a common base via `Clone()`
 - **Session persistence** -- save/resume conversations with file-based or in-memory stores
@@ -57,10 +67,11 @@ An agentic AI system is one where a language model autonomously decides to invok
 - **12 built-in tools** -- bash, file ops, search, HTTP, deep search, web search, and more
 - **Generic typed tools** -- `tools.NewTyped[I]()` with auto schema generation from struct tags
 - **Event filtering** -- `FilterEvents()` helper to consume only specific event types
-- **Panic recovery** -- tool panics are caught and converted to error results
-- **Retry logic** -- exponential backoff for transient provider errors
+- **Panic recovery** -- tool panics are caught, marked critical, and terminate the loop safely
+- **Smart retry logic** -- checks `x-should-retry` header, `io.ErrUnexpectedEOF`, status 408/409/429/5xx
+- **Context overflow detection** -- `IsContextTooLarge()` detects token limit errors across providers
 - **Zero external dependencies** -- core uses only the Go standard library
-- **Comprehensive test suite** -- provider unit tests, race tests, benchmarks
+- **Comprehensive test suite** -- provider unit tests, OpenRouter integration tests, race tests, benchmarks
 
 ## Installation
 

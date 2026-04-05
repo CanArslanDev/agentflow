@@ -43,24 +43,32 @@ for {
     3. Check token budget
     4. Run compaction if needed -> emit EventCompaction
     5. Execute pre-model hooks -> emit EventHookBlocked if blocked
-    6. Build Request (with Metadata from hook context for trace propagation)
+    6. Build Request (skip tools if provider rejected them in a previous turn)
     7. Apply rate limiter (Wait)
     8. Call provider.CreateStream() with retry -> emit EventRetry on retries
+       - On "tool calling not supported" error: drop tools, retry without them
+       - On "context too large" error: auto-compact if compactor set, retry
     9. Consume stream: emit text deltas, start tool execution via streaming executor
+       - Tool calls emitted mid-stream when JSON arguments become valid (early emission)
+       - Missing tool IDs auto-generated as "tool-call-{index}"
    10. Record usage, enforce budget -> emit EventBudgetWarning
    11. Execute post-model hooks
    12. If no tool calls -> check turn-end hooks -> return (completed)
    13. Execute tools through pipeline:
-       a. Validate tool exists + execution mode guard
-       b. Pre-tool hooks -> emit EventHookBlocked if blocked
-       c. Permission check -> emit EventPermissionDenied if denied
-       d. JSON Schema input validation (internal/jsonschema)
-       e. Execute with timeout (Config.ToolTimeout) and retry (Config.ToolRetries)
-       f. Apply ErrorStrategy if tool returns error
-       g. Apply result size limiting
-       h. Post-tool hooks
-   14. Append tool results to messages
-   15. Continue loop
+       a. Tool lookup with fuzzy matching (suffix + substring for shortened names)
+       b. Execution mode guard -- blocks local-only tools in remote mode
+       c. Pre-tool hooks -> emit EventHookBlocked if blocked
+       d. Permission check -> emit EventPermissionDenied if denied
+       e. JSON Schema input validation with descriptive repair messages
+       f. Execute with timeout + retry; panic recovery marks critical errors
+       g. Apply ErrorStrategy if tool returns error
+       h. Apply result size limiting
+       i. Post-tool hooks
+   14. Ensure every tool call has a result (fill missing with error results)
+   15. Append tool results to messages
+   16. Check for critical errors (tool panics) -> terminate if found
+   17. Loop detection: SHA-256 signature of (tool+input+output), terminate if >5 repeats
+   18. Continue loop
 }
 ```
 
@@ -243,12 +251,17 @@ func (p *Provider) CreateStream(ctx context.Context, req *agentflow.Request) (ag
 - Custom message conversion in `provider/anthropic/anthropic.go`
 - Auth via `x-api-key` header (not `Authorization: Bearer`)
 - Requires `anthropic-version` header
+- Supports `thinking` content blocks: `thinking_delta` emitted as `StreamEventThinkingDelta`
+- Tool call JSON validated with `json.Valid()` before emission
 
 **Gemini** has its own format (functionCall parts, API key in URL):
 - Custom stream parser in `provider/gemini/gemini.go`
 - Custom message conversion with `contents` array and `parts`
 - Auth via `?key=` URL parameter (not header)
 - Uses `generativelanguage.googleapis.com` base URL
+- Multi-part handling: pending events queue for chunks with multiple parts
+- Tool result name mapping: looks up tool name from message history (Google requires name, not call ID)
+- Tool call JSON validated with `json.Valid()` before emission
 
 **Ollama** has its own format (JSONL streaming, no SSE):
 - Custom JSONL stream parser in `provider/ollama/stream.go`
@@ -311,15 +324,16 @@ Hooks can propagate trace context to provider HTTP requests:
 
 Tool execution in `executeSingleTool()` follows this pipeline:
 
-1. **Tool lookup** -- unknown tool returns error to model
+1. **Tool lookup** -- exact match first, then fuzzy (suffix + substring). On failure, error includes available tool names so the model can self-correct
 2. **Execution mode guard** -- blocks local-only tools in remote mode
 3. **Pre-tool hooks** -- can block or modify input; emits `EventHookBlocked`
 4. **Permission check** -- can deny; emits `EventPermissionDenied`
-5. **Input validation** -- JSON Schema check against `InputSchema()`
-6. **Execute** -- with `context.WithTimeout` if `ToolTimeout` set, with retry loop if `ToolRetries` > 0
+5. **Input validation** -- JSON Schema check; on failure, returns full schema with field descriptions and required fields so the model can fix and retry (tool call repair)
+6. **Execute** -- with `context.WithTimeout` if `ToolTimeout` set, with retry loop if `ToolRetries` > 0; panic recovery catches crashes and marks them critical
 7. **Error strategy** -- `ErrorStrategy.OnToolError()` can transform or abort
 8. **Result limiting** -- `ResultLimiter.Limit()` if result exceeds `MaxResultChars`
 9. **Post-tool hooks** -- metrics, logging, observability
+10. **Result guarantee** -- after all tools complete, verify every tool call has a result; fill missing with error results to prevent model desynchronization
 
 ### Execution Mode Safety
 
@@ -372,7 +386,7 @@ agentflow/
     result.go                # ResultLimiter, TruncateLimiter, HeadTailLimiter, NoLimiter
     compactor.go             # Compactor interface (17 lines)
     streaming_executor.go    # Streaming tool executor (overlaps model gen with tool exec)
-    errors.go                # Sentinel errors, ProviderError, ToolError, ErrorStrategy
+    errors.go                # Sentinel errors, ProviderError (IsRetryable, IsContextTooLarge), ToolError, ErrorStrategy
     doc.go                   # Package-level documentation
 
     -- Extension packages --
@@ -395,7 +409,7 @@ agentflow/
     provider/mock/           # Deterministic mock for testing
 
     -- Internal --
-    internal/sse/            # Shared OpenAI-compatible SSE parser and request builder
+    internal/sse/            # Shared OpenAI-compatible SSE parser: early tool emission, fuzzy ID recovery, stateless tag cleaning
     internal/jsonschema/     # Lightweight JSON Schema validator (type, required, enum, properties)
 
     -- Session stores --
@@ -467,7 +481,7 @@ agentflow/
 
 - Every new feature must have unit tests using the mock provider
 - Provider tests use `httptest.NewServer` for mock HTTP responses (see `provider/openai/openai_test.go`)
-- Integration tests use Groq API and must skip when `GROQ_API_KEY` is not set
+- Integration tests use Groq API (`GROQ_API_KEY`) or OpenRouter API (`OPENROUTER_API_KEY`) and must skip when the key is not set
 - Integration tests should use `context.WithTimeout` to prevent hangs
 - When running all integration tests together, rate limits may cause failures -- re-run failing tests individually
 - Test names: `TestFeature_Scenario` for units, `TestIntegration_Feature` for integration
@@ -503,6 +517,7 @@ agentflow/
 | `provider/gemini/gemini_test.go` | gemini | Mock HTTP: text, tool call, document, error |
 | `provider/ollama/ollama_test.go` | ollama | Mock JSONL: text, tool call, multi-tool, usage, document fallback, health check |
 | `provider/fallback/fallback_test.go` | fallback | Cascading failover logic |
+| `openrouter_integration_test.go` | root | OpenRouter: simple chat, tool use, multi-tool |
 | `internal/jsonschema/validate_test.go` | jsonschema | Schema validation: types, required, enum, nested |
 
 ## README Maintenance

@@ -351,10 +351,16 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 		// Build and send the model request.
 		sysPrompt := a.config.SystemPrompt
 
+		// Skip sending tools if the provider rejected them in a previous turn.
+		var tools []ToolDefinition
+		if !state.toolsDropped {
+			tools = a.toolDefinitions()
+		}
+
 		req := &Request{
 			Messages:      state.messages,
 			SystemPrompt:  sysPrompt,
-			Tools:         a.toolDefinitions(),
+			Tools:         tools,
 			MaxTokens:     a.config.MaxTokens,
 			Temperature:   a.config.Temperature,
 			StopSequences: nil,
@@ -382,6 +388,18 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 
 		stream, err := a.createStreamWithRetry(ctx, req, events)
 		if err != nil {
+			// Tool calling not supported: some models (e.g. Groq compound-beta/mini)
+			// don't support native API tool calling. Drop tools and retry.
+			if !state.toolsDropped && len(req.Tools) > 0 && isToolCallingUnsupportedError(err) {
+				a.logWarn("model does not support tool calling, retrying without tools",
+					slog.Int("turn", state.turnCount),
+					slog.String("error", err.Error()),
+				)
+				state.toolsDropped = true
+				state.turnCount-- // Don't count this failed attempt.
+				continue          // Retry without tools (checked at request build time).
+			}
+
 			// Auto-compaction: if the error is "context too large" and we have a
 			// compactor, compact the conversation and retry this turn.
 			if IsContextTooLargeError(err) && a.compactor != nil {
@@ -1168,6 +1186,15 @@ func (a *Agent) logError(msg string, args ...any) {
 	}
 }
 
+// isToolCallingUnsupportedError checks if an error indicates that the model
+// does not support native API-level tool calling (e.g. Groq compound models).
+func isToolCallingUnsupportedError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "tool calling") && (strings.Contains(msg, "not supported") || strings.Contains(msg, "is not supported")) ||
+		strings.Contains(msg, "tools") && strings.Contains(msg, "not supported") ||
+		strings.Contains(msg, "function calling") && strings.Contains(msg, "not supported")
+}
+
 // ensureAllToolCallsHaveResults guarantees that every tool call has a
 // corresponding result. If a tool call is missing from results (due to
 // cancellation, timeout, or execution error), an error result is created.
@@ -1357,6 +1384,10 @@ type loopState struct {
 	// Loop detection: tracks tool interaction signatures to detect repetitive patterns.
 	// Key: SHA-256 hash of (tool_name + input + output), Value: occurrence count.
 	toolSignatures map[string]int
+
+	// Set to true when the provider rejects native tool calling (e.g. Groq
+	// compound models). Subsequent turns skip sending tools in the request.
+	toolsDropped bool
 }
 
 // toolBatch groups tool calls by their concurrency safety.

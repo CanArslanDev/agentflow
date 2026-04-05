@@ -425,7 +425,7 @@ agentflow/
     -- Tools --
     tools/builder.go         # Fluent ToolBuilder API
     tools/typed.go           # Generic TypedTool[I] with auto schema generation
-    tools/builtin/           # 11 ready-to-use tools (bash, files, search, http, etc.)
+    tools/builtin/           # 14 ready-to-use tools (bash, files, search, http, calculator, datetime, url reader, etc.)
 
     -- Examples --
     _examples/basic/         # Minimal agent

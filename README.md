@@ -64,7 +64,7 @@ An agentic AI system is one where a language model autonomously decides to invok
 - **Context compaction** -- sliding window, token-aware, AI-powered summarization, staged
 - **Multi-provider fallback** -- automatic failover across providers with health checking
 - **Multimodal** -- send images (base64 or URL) alongside text
-- **12 built-in tools** -- bash, file ops, search, HTTP, deep search, web search, and more
+- **14 built-in tools** -- bash, file ops, search, HTTP, deep search, web search, calculator, date/time, URL reader, and more
 - **Generic typed tools** -- `tools.NewTyped[I]()` with auto schema generation from struct tags
 - **Event filtering** -- `FilterEvents()` helper to consume only specific event types
 - **Panic recovery** -- tool panics are caught, marked critical, and terminate the loop safely

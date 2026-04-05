@@ -272,8 +272,8 @@ func TestAskUser(t *testing.T) {
 
 func TestAll(t *testing.T) {
 	all := builtin.All()
-	if len(all) != 11 {
-		t.Errorf("expected 11 tools, got %d", len(all))
+	if len(all) != 14 {
+		t.Errorf("expected 14 tools, got %d", len(all))
 	}
 
 	names := make(map[string]bool)

@@ -19,8 +19,11 @@ func All() []agentflow.Tool {
 		Glob(),
 		Grep(),
 		HTTPRequest(),
+		URLReader(),
 		WebSearch(),
 		DeepSearch(),
+		Calculator(),
+		CurrentDateTime(),
 		Sleep(),
 	}
 }
@@ -36,8 +39,11 @@ func Local() []agentflow.Tool {
 func Remote() []agentflow.Tool {
 	return []agentflow.Tool{
 		HTTPRequest(),
+		URLReader(),
 		WebSearch(),
 		DeepSearch(),
+		Calculator(),
+		CurrentDateTime(),
 		Sleep(),
 	}
 }
@@ -50,8 +56,11 @@ func ReadOnly() []agentflow.Tool {
 		Glob(),
 		Grep(),
 		HTTPRequest(),
+		URLReader(),
 		WebSearch(),
 		DeepSearch(),
+		Calculator(),
+		CurrentDateTime(),
 		Sleep(),
 	}
 }

@@ -28,8 +28,8 @@ func TestModeLocal_AllToolsVisible(t *testing.T) {
 	)
 
 	toolNames := agent.Tools()
-	if len(toolNames) != 11 { // bash, read_file, write_file, edit_file, list_dir, glob, grep, http_request, web_search, deep_search, sleep
-		t.Errorf("expected 11 tools in local mode, got %d: %v", len(toolNames), toolNames)
+	if len(toolNames) != 14 { // bash, read_file, write_file, edit_file, list_dir, glob, grep, http_request, read_url, web_search, deep_search, calculator, get_current_datetime, sleep
+		t.Errorf("expected 14 tools in local mode, got %d: %v", len(toolNames), toolNames)
 	}
 }
 

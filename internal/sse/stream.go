@@ -129,6 +129,13 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 		}
 
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
+			// Flush any partial tag buffers from reasoning/thinking strippers.
+			// When switching from reasoning to content field, leftover partial
+			// tags in the stripper buffers would never be completed and should
+			// be discarded to prevent state corruption.
+			s.reasoningStripper.reset()
+			s.thinkingStripper.reset()
+
 			segments := s.thinkParser.process(*choice.Delta.Content)
 			events := make([]agentflow.StreamEvent, 0, len(segments))
 			for _, seg := range segments {
@@ -229,6 +236,13 @@ var reasoningStripTags = []string{
 // classified as thinking but may contain raw formatting tags.
 type thinkTagStripper struct {
 	tagBuf string
+}
+
+// reset discards any buffered partial tag. Called when switching from
+// reasoning to content field to prevent stale state from corrupting
+// subsequent parsing.
+func (s *thinkTagStripper) reset() {
+	s.tagBuf = ""
 }
 
 // strip removes model-internal tags from text, returning the cleaned text.

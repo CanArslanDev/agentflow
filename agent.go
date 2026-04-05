@@ -2,9 +2,12 @@ package agentflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -523,6 +526,22 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 		toolResultMsg := newToolResultMessage(results)
 		state.messages = append(state.messages, toolResultMsg)
 		a.emit(events, Event{Type: EventMessage, Message: &toolResultMsg})
+
+		// Loop detection: check if tool interactions are repeating.
+		if a.detectToolLoop(toolCalls, results, state) {
+			a.logWarn("tool calling loop detected, terminating",
+				slog.Int("turn", state.turnCount),
+			)
+			a.emit(events, Event{
+				Type:  EventError,
+				Error: &ErrorEvent{Err: ErrToolLoop, Retrying: false, TurnCount: state.turnCount},
+			})
+			a.emit(events, Event{
+				Type:    EventTurnEnd,
+				TurnEnd: &TurnEndEvent{TurnNumber: state.turnCount, Reason: TurnEndError, Messages: state.messages},
+			})
+			return
+		}
 	}
 }
 
@@ -706,10 +725,19 @@ func (a *Agent) executeSingleTool(ctx context.Context, call ToolCall, state *loo
 
 	tool, ok := a.tools[call.Name]
 	if !ok {
-		return emitEarlyReturn(&ToolResult{
-			Content: "Error: unknown tool \"" + call.Name + "\"",
-			IsError: true,
-		})
+		// Fuzzy match: some models shorten tool names (e.g. "search" instead of
+		// "web_search"). Try suffix and substring matching before giving up.
+		tool, ok = a.fuzzyMatchTool(call.Name)
+		if !ok {
+			return emitEarlyReturn(&ToolResult{
+				Content: "Error: unknown tool \"" + call.Name + "\"",
+				IsError: true,
+			})
+		}
+		a.logInfo("fuzzy matched tool name",
+			slog.String("requested", call.Name),
+			slog.String("matched", tool.Name()),
+		)
 	}
 
 	// Execution mode guard — block local-only tools in remote mode.
@@ -1080,6 +1108,82 @@ func (a *Agent) logError(msg string, args ...any) {
 	}
 }
 
+// detectToolLoop checks if tool interactions are forming a repeating pattern.
+// Uses SHA-256 signatures of (tool_name + input + output) to detect when the
+// same tool call with the same result is repeated more than loopMaxRepeats times.
+// Based on the loop detection pattern from Crush/Fantasy.
+func (a *Agent) detectToolLoop(calls []ToolCall, results []toolExecResult, state *loopState) bool {
+	const loopMaxRepeats = 5
+
+	if state.toolSignatures == nil {
+		state.toolSignatures = make(map[string]int)
+	}
+
+	// Build a map of callID → result content for this turn.
+	resultMap := make(map[string]string, len(results))
+	for _, r := range results {
+		resultMap[r.callID] = r.result.Content
+	}
+
+	// Compute signature for this turn's tool interactions.
+	h := sha256.New()
+	for _, call := range calls {
+		output := resultMap[call.ID]
+		io.WriteString(h, call.Name)
+		io.WriteString(h, "\x00")
+		io.WriteString(h, string(call.Input))
+		io.WriteString(h, "\x00")
+		io.WriteString(h, output)
+		io.WriteString(h, "\x00")
+	}
+	sig := hex.EncodeToString(h.Sum(nil))
+
+	state.toolSignatures[sig]++
+	return state.toolSignatures[sig] > loopMaxRepeats
+}
+
+// fuzzyMatchTool attempts to find a registered tool when the model uses a
+// shortened or slightly different name. Some models (e.g. Gemini) may call
+// "search" instead of "web_search". Matching priority:
+//  1. Suffix match: registered "web_search" ends with model's "search"
+//  2. Substring match: registered name contains model's name
+//
+// Returns the tool and true if exactly one match is found, nil and false otherwise.
+func (a *Agent) fuzzyMatchTool(name string) (Tool, bool) {
+	if name == "" {
+		return nil, false
+	}
+	lower := strings.ToLower(name)
+
+	// Pass 1: suffix match (e.g. "search" matches "web_search").
+	var suffixMatch Tool
+	suffixCount := 0
+	for tName, t := range a.tools {
+		if strings.HasSuffix(strings.ToLower(tName), lower) {
+			suffixMatch = t
+			suffixCount++
+		}
+	}
+	if suffixCount == 1 {
+		return suffixMatch, true
+	}
+
+	// Pass 2: substring match (e.g. "search" matches "search_web").
+	var subMatch Tool
+	subCount := 0
+	for tName, t := range a.tools {
+		if strings.Contains(strings.ToLower(tName), lower) {
+			subMatch = t
+			subCount++
+		}
+	}
+	if subCount == 1 {
+		return subMatch, true
+	}
+
+	return nil, false
+}
+
 // loopState carries mutable state across agentic loop iterations.
 type loopState struct {
 	messages  []Message
@@ -1092,6 +1196,10 @@ type loopState struct {
 	isThinkingTurn     bool // true when current turn should emit ThinkingDelta
 	thinkingCompleted  bool // true after the thinking turn has finished
 	nativeThinkingSeen bool // true if provider emitted StreamEventThinkingDelta
+
+	// Loop detection: tracks tool interaction signatures to detect repetitive patterns.
+	// Key: SHA-256 hash of (tool_name + input + output), Value: occurrence count.
+	toolSignatures map[string]int
 }
 
 // toolBatch groups tool calls by their concurrency safety.

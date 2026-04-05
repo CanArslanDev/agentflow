@@ -3,6 +3,10 @@ package agentflow
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
 )
 
 // Sentinel errors returned by the framework.
@@ -30,14 +34,18 @@ var (
 
 	// ErrSessionNotFound is returned when a session ID does not exist in the store.
 	ErrSessionNotFound = errors.New("agentflow: session not found")
+
+	// ErrToolLoop is returned when the agent detects a repeated tool calling pattern.
+	ErrToolLoop = errors.New("agentflow: tool calling loop detected")
 )
 
 // ProviderError wraps an error from the AI provider with status and retry information.
 type ProviderError struct {
-	StatusCode int
-	Message    string
-	Retryable  bool
-	Err        error
+	StatusCode      int
+	Message         string
+	Retryable       bool
+	Err             error
+	ResponseHeaders http.Header
 }
 
 func (e *ProviderError) Error() string {
@@ -52,8 +60,53 @@ func (e *ProviderError) Unwrap() error {
 }
 
 // IsRetryable reports whether the error is transient and the operation can be retried.
+// Checks multiple signals following the pattern used by production AI SDKs:
+//   - io.ErrUnexpectedEOF (stream ended unexpectedly)
+//   - x-should-retry response header
+//   - HTTP status codes: 408, 409, 429, 5xx
 func (e *ProviderError) IsRetryable() bool {
-	return e.Retryable
+	if e.Retryable {
+		return true
+	}
+	// Unexpected EOF is always retryable (stream interruption).
+	if e.Err != nil && errors.Is(e.Err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	// Check x-should-retry header from provider.
+	if e.ResponseHeaders != nil {
+		if v := e.ResponseHeaders.Get("x-should-retry"); v != "" {
+			if b, err := strconv.ParseBool(v); err == nil {
+				return b
+			}
+		}
+	}
+	// Standard retryable status codes.
+	switch e.StatusCode {
+	case 408, 409, 429:
+		return true
+	}
+	return e.StatusCode >= 500
+}
+
+// IsContextTooLarge reports whether the error indicates the request context
+// exceeds the model's maximum token limit.
+func (e *ProviderError) IsContextTooLarge() bool {
+	msg := strings.ToLower(e.Message)
+	return strings.Contains(msg, "context") && strings.Contains(msg, "too large") ||
+		strings.Contains(msg, "context length") && strings.Contains(msg, "exceed") ||
+		strings.Contains(msg, "maximum context") ||
+		strings.Contains(msg, "token limit") && strings.Contains(msg, "exceed") ||
+		strings.Contains(msg, "too many tokens") ||
+		strings.Contains(msg, "input too long")
+}
+
+// IsContextTooLargeError reports whether err indicates a context size overflow.
+func IsContextTooLargeError(err error) bool {
+	var pe *ProviderError
+	if errors.As(err, &pe) {
+		return pe.IsContextTooLarge()
+	}
+	return false
 }
 
 // ToolError wraps an error from tool execution with the tool name and call ID.

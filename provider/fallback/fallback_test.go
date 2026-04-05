@@ -22,9 +22,13 @@ type failingProvider struct {
 }
 
 func (p *failingProvider) CreateStream(_ context.Context, _ *agentflow.Request) (agentflow.Stream, error) {
+	code := 503
+	if !p.retryable {
+		code = 403 // non-retryable: forbidden
+	}
 	return nil, &agentflow.ProviderError{
-		StatusCode: 503,
-		Message:    "service unavailable",
+		StatusCode: code,
+		Message:    "provider error",
 		Retryable:  p.retryable,
 	}
 }

@@ -3,6 +3,7 @@ package sse
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -102,7 +103,10 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 		}
 		choice := chunk.Choices[0]
 
-		if choice.FinishReason != nil && *choice.FinishReason == "tool_calls" {
+		// Tool calls override finish reason: if we have accumulated tool calls
+		// and get any finish reason, flush them regardless of the reason value.
+		// Some providers send "stop" instead of "tool_calls" even when tools were called.
+		if choice.FinishReason != nil {
 			if events := s.flushToolCalls(); len(events) > 0 {
 				return events[0], nil
 			}
@@ -149,25 +153,49 @@ func (s *Stream) Next() (agentflow.StreamEvent, error) {
 
 		if len(choice.Delta.ToolCalls) > 0 {
 			for _, tc := range choice.Delta.ToolCalls {
+				// Skip empty deltas (no name and no arguments).
+				if tc.Function.Name == "" && tc.Function.Arguments == "" {
+					continue
+				}
+
 				acc, ok := s.toolCalls[tc.Index]
 				if !ok {
 					acc = &ToolCallAccumulator{}
 					s.toolCalls[tc.Index] = acc
 				}
+				// Missing tool ID recovery: generate one from index.
 				if tc.ID != "" {
 					acc.ID = tc.ID
+				} else if acc.ID == "" {
+					acc.ID = fmt.Sprintf("tool-call-%d", tc.Index)
 				}
 				if tc.Function.Name != "" {
 					acc.Name = tc.Function.Name
 				}
 				acc.Arguments += tc.Function.Arguments
+
+				// Early emission: if accumulated JSON is valid, emit immediately
+				// instead of waiting for stream end. This reduces latency by
+				// allowing tool execution to start while the stream continues.
+				if acc.Name != "" && acc.Arguments != "" && json.Valid([]byte(acc.Arguments)) {
+					ev := agentflow.StreamEvent{
+						Type: agentflow.StreamEventToolCall,
+						ToolCall: &agentflow.ToolCall{
+							ID:    acc.ID,
+							Name:  acc.Name,
+							Input: json.RawMessage(acc.Arguments),
+						},
+					}
+					delete(s.toolCalls, tc.Index)
+					return ev, nil
+				}
 			}
 			continue
 		}
 	}
 }
 
-// flushToolCalls converts accumulated tool call deltas into complete StreamEvents.
+// flushToolCalls converts remaining accumulated tool call deltas into complete StreamEvents.
 // Only emits tool calls with valid JSON arguments.
 func (s *Stream) flushToolCalls() []agentflow.StreamEvent {
 	if len(s.toolCalls) == 0 {
@@ -200,6 +228,23 @@ func (s *Stream) Close() error {
 // Usage returns token usage statistics collected during streaming.
 func (s *Stream) Usage() *agentflow.Usage {
 	return s.usage
+}
+
+// reasoningTagReplacer strips model-internal tags from reasoning field content.
+// Stateless: replaces complete tags only, no cross-chunk buffering needed.
+// This avoids the state leakage issues of the old stateful thinkTagStripper.
+var reasoningTagReplacer = strings.NewReplacer(
+	"<think>", "",
+	"</think>", "",
+	"<tool>", "",
+	"</tool>", "",
+	"<output>", "",
+	"</output>", "",
+)
+
+// stripReasoningTags removes model-internal formatting tags from reasoning content.
+func stripReasoningTags(text string) string {
+	return reasoningTagReplacer.Replace(text)
 }
 
 // --- Think tag parser ---
@@ -281,23 +326,6 @@ func (p *thinkTagParser) process(text string) []textSegment {
 	}
 
 	return segments
-}
-
-// reasoningTagReplacer strips model-internal tags from reasoning field content.
-// Stateless: replaces complete tags only, no cross-chunk buffering needed.
-// This avoids the state leakage issues of the old stateful thinkTagStripper.
-var reasoningTagReplacer = strings.NewReplacer(
-	"<think>", "",
-	"</think>", "",
-	"<tool>", "",
-	"</tool>", "",
-	"<output>", "",
-	"</output>", "",
-)
-
-// stripReasoningTags removes model-internal formatting tags from reasoning content.
-func stripReasoningTags(text string) string {
-	return reasoningTagReplacer.Replace(text)
 }
 
 // matchPartialSuffix checks if the end of text matches a prefix of tag.

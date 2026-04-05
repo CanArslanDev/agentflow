@@ -204,6 +204,17 @@ func (p *Provider) buildRequestBody(req *agentflow.Request) generateRequest {
 }
 
 func (p *Provider) convertMessages(messages []agentflow.Message) []geminiContent {
+	// Build a map of tool call ID → tool name from message history.
+	// Gemini requires the tool name (not call ID) in function responses.
+	toolCallNames := make(map[string]string)
+	for _, msg := range messages {
+		for _, b := range msg.Content {
+			if b.Type == agentflow.ContentToolCall && b.ToolCall != nil {
+				toolCallNames[b.ToolCall.ID] = b.ToolCall.Name
+			}
+		}
+	}
+
 	var result []geminiContent
 
 	for _, msg := range messages {
@@ -249,9 +260,15 @@ func (p *Provider) convertMessages(messages []agentflow.Message) []geminiContent
 				}
 			case agentflow.ContentToolResult:
 				if b.ToolResult != nil {
+					// Gemini requires the tool name in function responses, not the call ID.
+					// Look up the tool name from the call ID in message history.
+					name := toolCallNames[b.ToolResult.ToolCallID]
+					if name == "" {
+						name = b.ToolResult.ToolCallID // fallback
+					}
 					parts = append(parts, geminiPart{
 						FunctionResponse: &functionResponse{
-							Name:     b.ToolResult.ToolCallID,
+							Name:     name,
 							Response: map[string]any{"result": b.ToolResult.Content},
 						},
 					})

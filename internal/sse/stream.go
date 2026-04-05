@@ -36,9 +36,11 @@ type Stream struct {
 
 // NewStream creates an SSE stream parser from an HTTP response.
 func NewStream(resp *http.Response) *Stream {
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 256*1024), 10*1024*1024) // 256KB initial, 10MB max
 	return &Stream{
 		resp:      resp,
-		scanner:   bufio.NewScanner(resp.Body),
+		scanner:   scanner,
 		toolCalls: make(map[int]*ToolCallAccumulator),
 	}
 }

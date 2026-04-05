@@ -2,9 +2,13 @@ package agentflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -346,10 +350,23 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 		}
 
 		// Build and send the model request.
+		toolDefs := a.toolDefinitions()
+		sysPrompt := a.config.SystemPrompt
+		var reqTools []ToolDefinition
+
+		if a.config.TextToolCalling && len(toolDefs) > 0 {
+			// Text-based tool calling: inject tool instructions into system
+			// prompt instead of sending Request.Tools (which would cause 400
+			// errors on models without native tool calling support).
+			sysPrompt += a.buildToolInstruction()
+		} else {
+			reqTools = toolDefs
+		}
+
 		req := &Request{
 			Messages:      state.messages,
-			SystemPrompt:  a.config.SystemPrompt,
-			Tools:         a.toolDefinitions(),
+			SystemPrompt:  sysPrompt,
+			Tools:         reqTools,
 			MaxTokens:     a.config.MaxTokens,
 			Temperature:   a.config.Temperature,
 			StopSequences: nil,
@@ -461,6 +478,30 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			TurnCount: state.turnCount,
 			Metadata:  state.metadata,
 		}, state)
+
+		// Text-based tool calling: detect [TOOL_CALL: ...] in assistant text.
+		if a.config.TextToolCalling && len(toolCalls) == 0 {
+			textToolCalls := a.parseTextToolCalls(assistantMsg.TextContent())
+			if len(textToolCalls) > 0 {
+				results := a.executeTools(ctx, textToolCalls, state, events)
+				// Build tool result as a system message (model doesn't expect tool_result format).
+				var resultParts []string
+				for _, r := range results {
+					prefix := "Tool result"
+					if r.result.IsError {
+						prefix = "Tool error"
+					}
+					resultParts = append(resultParts, fmt.Sprintf("[%s from %s]: %s", prefix, r.callID, r.result.Content))
+				}
+				resultMsg := Message{
+					Role:    RoleSystem,
+					Content: []ContentBlock{{Type: ContentText, Text: strings.Join(resultParts, "\n\n")}},
+				}
+				state.messages = append(state.messages, resultMsg)
+				a.emit(events, Event{Type: EventMessage, Message: &resultMsg})
+				continue // Loop back so model can use the results.
+			}
+		}
 
 		// Check if tool calls are needed.
 		if len(toolCalls) == 0 {
@@ -1073,6 +1114,80 @@ func (a *Agent) logError(msg string, args ...any) {
 	if a.config.Logger != nil {
 		a.config.Logger.Error(msg, args...)
 	}
+}
+
+// --- Text-based tool calling ---
+
+// textToolCallRegex matches [TOOL_CALL: tool_name("arguments")] or [TOOL_CALL: tool_name(arguments)].
+var textToolCallRegex = regexp.MustCompile(`\[TOOL_CALL:\s*(\w+)\(([^)]*)\)\]`)
+
+// buildToolInstruction generates a system prompt fragment describing available
+// tools and the expected [TOOL_CALL: ...] format for text-based tool calling.
+func (a *Agent) buildToolInstruction() string {
+	tools := a.toolDefinitions()
+	if len(tools) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\nYou have access to the following tools:\n")
+	for _, t := range tools {
+		sb.WriteString(fmt.Sprintf("- %s: %s\n", t.Name, t.Description))
+	}
+	sb.WriteString("\nWhen you need to use a tool, write EXACTLY this format in your response:\n")
+	sb.WriteString("[TOOL_CALL: tool_name(\"arguments\")]\n\n")
+	sb.WriteString("Examples:\n")
+	sb.WriteString("[TOOL_CALL: web_search(\"current weather in Istanbul\")]\n")
+	sb.WriteString("[TOOL_CALL: deep_search(\"April 5 2026 special events\")]\n\n")
+	sb.WriteString("Wait for the tool result before providing your final answer.\n")
+	sb.WriteString("Do NOT make up information - use the appropriate tool for current or factual data.\n")
+	return sb.String()
+}
+
+// parseTextToolCalls extracts [TOOL_CALL: tool_name("args")] patterns from text.
+// Returns ToolCall objects ready for execution through the standard tool pipeline.
+func (a *Agent) parseTextToolCalls(text string) []ToolCall {
+	matches := textToolCallRegex.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	var calls []ToolCall
+	for i, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		toolName := match[1]
+		rawArgs := match[2]
+
+		// Check if tool is registered.
+		if _, ok := a.tools[toolName]; !ok {
+			continue
+		}
+
+		// Clean up arguments: strip surrounding quotes if present.
+		rawArgs = strings.TrimSpace(rawArgs)
+		if len(rawArgs) >= 2 && rawArgs[0] == '"' && rawArgs[len(rawArgs)-1] == '"' {
+			rawArgs = rawArgs[1 : len(rawArgs)-1]
+		}
+
+		// Build JSON input. For simple string arguments, wrap as {"query": "..."}.
+		// For JSON-like input, pass through.
+		var inputJSON json.RawMessage
+		if len(rawArgs) > 0 && rawArgs[0] == '{' {
+			inputJSON = json.RawMessage(rawArgs)
+		} else {
+			inputJSON, _ = json.Marshal(map[string]string{"query": rawArgs})
+		}
+
+		calls = append(calls, ToolCall{
+			ID:    fmt.Sprintf("text-call-%d", i),
+			Name:  toolName,
+			Input: inputJSON,
+		})
+	}
+
+	return calls
 }
 
 // loopState carries mutable state across agentic loop iterations.

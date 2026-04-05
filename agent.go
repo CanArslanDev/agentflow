@@ -356,7 +356,9 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			Metadata:      extractRequestMetadata(state.metadata),
 		}
 
-		// Agentic thinking: on the thinking turn, inject thinking prompt and hide tools.
+		// Agentic thinking: on the thinking turn, inject thinking prompt.
+		// Tools remain available so the model can use them while thinking
+		// (e.g., web search when the user asks to research something).
 		if a.config.ThinkingPrompt != "" && !state.thinkingCompleted && !state.nativeThinkingSeen {
 			state.isThinkingTurn = true
 			if req.SystemPrompt != "" {
@@ -364,7 +366,6 @@ func (a *Agent) runLoop(ctx context.Context, messages []Message, events chan<- E
 			} else {
 				req.SystemPrompt = a.config.ThinkingPrompt
 			}
-			req.Tools = nil // Model should only think, not call tools.
 		}
 
 		modelStart := time.Now()
